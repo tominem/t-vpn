@@ -1,0 +1,14 @@
+{
+  "id": "com.tominem.tvpn",
+  "title": "T-VPN",
+  "main": "frontend/index.html",
+  "icon": "frontend/icon.png",
+  "type": "web",
+  "version": "1.0.0",
+  "vendor": "tominem",
+  "largeIcon": "frontend/icon_large.png",
+  "bgImage": "",
+  "splashBackground": "",
+  "resolution": "1920x1080",
+  "uiRevision": "2"
+}

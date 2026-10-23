@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# :^)
+eval "$(sed -e '/^thirdparty_jail=/s/=.*/=off/' \
+            -e '\@/var/luna/preferences/devmode_enabled@s/if /&false \&\& /' \
+            '/usr/bin/run-js-service')"

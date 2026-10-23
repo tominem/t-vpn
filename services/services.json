@@ -1,20 +1,9 @@
 {
   "id": "com.tominem.tvpn.service",
-  "description": "T-VPN background service",
-  "engine": {
-    "node": "0.12.2"
-  },
-  "provider": {
-    "name": "com.tominem.tvpn.service",
-    "role": {
-      "exeName": "/usr/bin/node",
-      "type": "regular",
-      "allowedNames": ["com.tominem.tvpn.service"]
-    },
-    "services": [
-      {
-        "name": "com.tominem.tvpn.service"
-      }
-    ]
-  }
+  "description": "T-VPN Service",
+  "services": [
+    {
+      "name": "com.tominem.tvpn.service"
+    }
+  ]
 }

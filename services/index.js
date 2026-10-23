@@ -40,3 +40,23 @@ service.register('status', (message) => {
   const result = vpn.status();
   message.respond({ returnValue: true, ...result });
 });
+
+service.register('setAutoConnect', (message) => {
+  const { enabled, country } = message.payload;
+  if (enabled === false) {
+    const result = vpn.clearAutoConnect();
+    message.respond({ returnValue: result.ok, ...result });
+    return;
+  }
+  if (!country || typeof country !== 'string') {
+    message.respond({ returnValue: false, error: 'Missing required field: country' });
+    return;
+  }
+  const result = vpn.setAutoConnect(country.toLowerCase());
+  message.respond({ returnValue: result.ok, ...result });
+});
+
+service.register('getAutoConnect', (message) => {
+  const result = vpn.getAutoConnect();
+  message.respond({ returnValue: true, ...result });
+});

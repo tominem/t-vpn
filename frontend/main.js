@@ -8,6 +8,7 @@ const COUNTRIES = [
   { code: 'de', label: '🇩🇪 Germany' },
   { code: 'jp', label: '🇯🇵 Japan' },
   { code: 'nl', label: '🇳🇱 Netherlands' },
+  { code: 'ar', label: '🇦🇷 Argentina' },
 ];
 
 const SERVICE = 'luna://com.tominem.tvpn.service/';

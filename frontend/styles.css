@@ -81,4 +81,9 @@ footer {
 .btn-danger:hover    { background: #8a2020; }
 .btn-danger:disabled { opacity: 0.4; cursor: default; }
 
+.btn-toggle          { background: #1e1e1e; color: #888; border: 2px solid #333; }
+.btn-toggle:hover:not(:disabled) { border-color: #4cff91; color: #4cff91; }
+.btn-toggle.active   { background: #1a3a28; color: #4cff91; border-color: #2a6e48; }
+.btn-toggle:disabled { opacity: 0.4; cursor: default; }
+
 #message { font-size: 26px; color: #888; }

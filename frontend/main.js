@@ -33,19 +33,27 @@ function lunaCall(method, params = {}) {
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const badge        = document.getElementById('status-badge');
-const countriesDiv = document.getElementById('countries');
+const badge         = document.getElementById('status-badge');
+const countriesDiv  = document.getElementById('countries');
 const btnDisconnect = document.getElementById('btn-disconnect');
-const messageEl    = document.getElementById('message');
+const btnAutoConn   = document.getElementById('btn-autoconnect');
+const messageEl     = document.getElementById('message');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let activeCountry = null;
+let autoConnectOn = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function setMessage(text) {
   messageEl.textContent = text;
+}
+
+function applyAutoConnect({ enabled }) {
+  autoConnectOn = !!enabled;
+  btnAutoConn.classList.toggle('active', autoConnectOn);
+  btnAutoConn.textContent = autoConnectOn ? 'Auto-connect: ON' : 'Auto-connect: OFF';
 }
 
 function applyStatus({ connected, country }) {
@@ -54,6 +62,7 @@ function applyStatus({ connected, country }) {
   badge.textContent = connected ? `Connected · ${country.toUpperCase()}` : 'Disconnected';
   badge.className = `badge ${connected ? 'connected' : 'disconnected'}`;
   btnDisconnect.disabled = !connected;
+  btnAutoConn.disabled = !connected;
 
   document.querySelectorAll('.country-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.code === activeCountry);
@@ -103,12 +112,34 @@ btnDisconnect.addEventListener('click', async () => {
   }
 });
 
+// ── Auto-connect toggle ───────────────────────────────────────────────────────
+
+btnAutoConn.addEventListener('click', async () => {
+  const enabling = !autoConnectOn;
+  try {
+    if (enabling) {
+      await lunaCall('setAutoConnect', { enabled: true, country: activeCountry });
+      setMessage('Auto-connect saved. TV will connect to this server on next boot.');
+    } else {
+      await lunaCall('setAutoConnect', { enabled: false });
+      setMessage('Auto-connect disabled.');
+    }
+    applyAutoConnect({ enabled: enabling });
+  } catch (err) {
+    setMessage(`Error: ${err.message}`);
+  }
+});
+
 // ── Poll status on load ───────────────────────────────────────────────────────
 
 async function refreshStatus() {
   try {
-    const result = await lunaCall('status');
-    applyStatus(result);
+    const [statusResult, acResult] = await Promise.all([
+      lunaCall('status'),
+      lunaCall('getAutoConnect'),
+    ]);
+    applyStatus(statusResult);
+    applyAutoConnect(acResult);
   } catch {
     applyStatus({ connected: false, country: null });
   }

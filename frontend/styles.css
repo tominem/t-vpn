@@ -1,0 +1,84 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0d0d0d;
+  color: #f0f0f0;
+  font-family: 'LG Display', sans-serif;
+  font-size: 28px;
+  height: 1080px;
+  width: 1920px;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 60px 100px;
+  gap: 48px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+h1 { font-size: 64px; font-weight: 700; letter-spacing: 2px; }
+h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
+
+.badge {
+  padding: 8px 24px;
+  border-radius: 999px;
+  font-size: 26px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.badge.disconnected { background: #333; color: #888; }
+.badge.connected    { background: #1a6e3c; color: #4cff91; }
+.badge.connecting   { background: #4a3a00; color: #ffc84a; }
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.country-btn {
+  background: #1e1e1e;
+  border: 2px solid #333;
+  border-radius: 16px;
+  color: #f0f0f0;
+  cursor: pointer;
+  font-size: 28px;
+  padding: 24px 48px;
+  transition: background 0.15s, border-color 0.15s;
+  min-width: 200px;
+  text-align: center;
+}
+.country-btn:focus,
+.country-btn:hover   { background: #2a2a2a; border-color: #4cff91; outline: none; }
+.country-btn.active  { background: #1a6e3c; border-color: #4cff91; color: #4cff91; }
+.country-btn:disabled { opacity: 0.4; cursor: default; }
+
+footer {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  margin-top: auto;
+}
+
+.btn {
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 28px;
+  font-weight: 600;
+  padding: 20px 56px;
+}
+.btn-danger          { background: #6e1a1a; color: #ff6b6b; }
+.btn-danger:hover    { background: #8a2020; }
+.btn-danger:disabled { opacity: 0.4; cursor: default; }
+
+#message { font-size: 26px; color: #888; }

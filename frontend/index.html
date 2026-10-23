@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920">
+  <title>T-VPN</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>T-VPN</h1>
+      <div id="status-badge" class="badge disconnected">Disconnected</div>
+    </header>
+
+    <section id="server-list">
+      <h2>Select Server</h2>
+      <div id="countries" class="grid">
+        <!-- Populated by main.js from COUNTRIES constant -->
+      </div>
+    </section>
+
+    <footer>
+      <button id="btn-disconnect" class="btn btn-danger" disabled>Disconnect</button>
+      <p id="message"></p>
+    </footer>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>

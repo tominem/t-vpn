@@ -13,21 +13,54 @@ const COUNTRIES = [
 
 const SERVICE = 'luna://com.tominem.tvpn.service/';
 
+// A call that never comes back would otherwise leave the UI stuck on
+// "Connecting…" forever; the hub does occasionally drop a service.
+const CALL_TIMEOUT_MS = 20000;
+
 /**
  * Calls a Luna service method.
- * webOS exposes webOSTV.service.request() in the WAM runtime.
+ *
+ * Uses PalmServiceBridge, which WAM injects, rather than webOS.service.request:
+ * the latter comes from the webOSTV.js SDK library, which this app does not
+ * bundle, so `webOS` is simply undefined here.
  *
  * @param {string} method
  * @param {object} params
  * @returns {Promise<object>}
  */
-function lunaCall(method, params = {}) {
+function lunaCall(method, params) {
   return new Promise((resolve, reject) => {
-    webOS.service.request(SERVICE + method, {
-      parameters: params,
-      onSuccess: resolve,
-      onFailure: (e) => reject(new Error(e.errorText || 'Luna call failed')),
-    });
+    const bridge = new PalmServiceBridge();
+    let settled = false;
+
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(arg);
+    };
+
+    const timer = setTimeout(
+      () => finish(reject, new Error(method + ' timed out')),
+      CALL_TIMEOUT_MS
+    );
+
+    bridge.onservicecallback = (raw) => {
+      let res;
+      try {
+        res = JSON.parse(raw);
+      } catch (e) {
+        finish(reject, new Error('Malformed reply from service'));
+        return;
+      }
+      if (res.returnValue === false) {
+        finish(reject, new Error(res.errorText || res.error || 'Luna call failed'));
+      } else {
+        finish(resolve, res);
+      }
+    };
+
+    bridge.call(SERVICE + method, JSON.stringify(params || {}));
   });
 }
 
@@ -57,9 +90,12 @@ function applyAutoConnect({ enabled }) {
 }
 
 function applyStatus({ connected, country }) {
-  activeCountry = connected ? country : null;
+  activeCountry = connected ? country || null : null;
 
-  badge.textContent = connected ? `Connected · ${country.toUpperCase()}` : 'Disconnected';
+  // A live tunnel whose recorded country was lost still counts as connected.
+  badge.textContent = connected
+    ? 'Connected' + (activeCountry ? ` · ${activeCountry.toUpperCase()}` : '')
+    : 'Disconnected';
   badge.className = `badge ${connected ? 'connected' : 'disconnected'}`;
   btnDisconnect.disabled = !connected;
   btnAutoConn.disabled = !connected;
@@ -140,7 +176,10 @@ async function refreshStatus() {
     ]);
     applyStatus(statusResult);
     applyAutoConnect(acResult);
-  } catch {
+  } catch (err) {
+    // WAM here is Chrome 53, where a binding-less `catch {}` is a parse error
+    // that takes the whole script down. Keep the binding.
+    setMessage('Could not reach the VPN service: ' + err.message);
     applyStatus({ connected: false, country: null });
   }
 }

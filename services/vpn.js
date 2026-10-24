@@ -9,6 +9,9 @@ var LOG_PATH = '/tmp/tvpn-openvpn.log';
 var STATE_PATH = '/tmp/tvpn-state.json';
 var PID_PATH = '/tmp/tvpn-openvpn.pid';
 var SPAWN_ERR_PATH = '/tmp/tvpn-spawn-error.log';
+// Redirects the resolver to the pushed DNS while connected; without it the
+// tunnel leaks every lookup to the ISP. See the script for the details.
+var DNS_SCRIPT = '/media/developer/ovpn-alpine/tvpn-dns-updown.sh';
 
 // webOS starts Luna services with LD_PRELOAD=/usr/lib/libsystrim.so.3, a glibc
 // library, and children inherit it. A musl-linked binary then dies at startup
@@ -54,6 +57,17 @@ VpnManager.prototype._clearState = function () {
   // Both files are routinely absent; removing a missing one is success here.
   try { fs.unlinkSync(STATE_PATH); } catch (e) { /* already gone */ }
   try { fs.unlinkSync(PID_PATH); } catch (e) { /* already gone */ }
+
+  // OpenVPN's --down hook normally drops the resolver override, but it never
+  // runs if the process was killed outright. Left behind, it keeps sending
+  // every lookup to the VPN provider's DNS over the open internet while the
+  // tunnel is gone, so clear it here too. Harmless when already unmounted.
+  try {
+    spawn('/bin/sh', ['-c', 'mountpoint -q /etc/resolv.conf && umount /etc/resolv.conf'],
+      { detached: true, stdio: 'ignore', env: childEnv() }).unref();
+  } catch (e) {
+    // Best effort: a surviving override degrades privacy, not connectivity.
+  }
 };
 
 VpnManager.prototype.connect = function (country) {
@@ -80,6 +94,9 @@ VpnManager.prototype.connect = function (country) {
     '--auth-user-pass', authPath,
     '--log', LOG_PATH,
     '--writepid', PID_PATH,
+    '--script-security', '2',
+    '--up', DNS_SCRIPT,
+    '--down', DNS_SCRIPT,
     '--daemon',
   ]);
   var proc = spawn(this._binary, args, {
@@ -127,6 +144,10 @@ VpnManager.prototype.disconnect = function () {
 VpnManager.prototype.status = function () {
   var state = this._readState();
   if (state === null) {
+    // A recorded pid that is no longer running means the tunnel died without
+    // going through disconnect(); clean up after it so a crashed session does
+    // not leave the resolver pointed into a tunnel that no longer exists.
+    if (fs.existsSync(PID_PATH)) this._clearState();
     return { connected: false, country: null, pid: null };
   }
   return { connected: true, country: state.country, pid: state.pid };

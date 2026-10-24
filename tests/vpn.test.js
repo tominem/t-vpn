@@ -17,6 +17,12 @@ const BIN = '/media/developer/launch.sh';
 const DIR = '/media/developer/vpn';
 const PID_PATH = '/tmp/tvpn-openvpn.pid';
 const STATE_PATH = '/tmp/tvpn-state.json';
+const DNS_SCRIPT = '/media/developer/ovpn-alpine/tvpn-dns-updown.sh';
+
+/** connect() also spawns housekeeping commands; find the OpenVPN one. */
+function openvpnCall() {
+  return spawn.mock.calls.find((c) => c[0] === BIN);
+}
 
 function makeMockProcess(pid = 1234) {
   return { pid, kill: jest.fn(), on: jest.fn(), unref: jest.fn() };
@@ -24,7 +30,11 @@ function makeMockProcess(pid = 1234) {
 
 /** Make the mocked fs behave as if no tunnel is recorded. */
 function noTunnel() {
-  fs.existsSync.mockImplementation((p) => !String(p).startsWith('/proc/'));
+  // Config files exist; the pidfile and any /proc entry do not.
+  fs.existsSync.mockImplementation((p) => {
+    const path = String(p);
+    return !path.startsWith('/proc/') && path !== PID_PATH;
+  });
   fs.readFileSync.mockImplementation((p) => {
     if (p === PID_PATH) throw new Error('ENOENT');
     throw new Error('ENOENT: ' + p);
@@ -59,6 +69,9 @@ describe('VpnManager.connect()', () => {
         '--auth-user-pass', '/media/developer/vpn/.auth',
         '--log', '/tmp/tvpn-openvpn.log',
         '--writepid', PID_PATH,
+        '--script-security', '2',
+        '--up', DNS_SCRIPT,
+        '--down', DNS_SCRIPT,
         '--daemon',
       ],
       expect.objectContaining({ detached: true, stdio: 'ignore' })
@@ -79,7 +92,7 @@ describe('VpnManager.connect()', () => {
 
     new VpnManager(BIN, DIR).connect('us');
 
-    const env = spawn.mock.calls[0][2].env;
+    const env = openvpnCall()[2].env;
     expect(env).not.toHaveProperty('LD_PRELOAD');
   });
 
@@ -88,7 +101,7 @@ describe('VpnManager.connect()', () => {
 
     new VpnManager(BIN, DIR, ['--library-path', '/libs', '/bin/openvpn']).connect('us');
 
-    expect(spawn.mock.calls[0][1].slice(0, 3)).toEqual([
+    expect(openvpnCall()[1].slice(0, 3)).toEqual([
       '--library-path', '/libs', '/bin/openvpn',
     ]);
   });
@@ -137,6 +150,30 @@ describe('VpnManager.disconnect()', () => {
     const result = new VpnManager(BIN, DIR).disconnect();
 
     expect(result).toEqual({ ok: false, error: 'Not connected.' });
+  });
+});
+
+describe('resolver override cleanup', () => {
+  test('a crashed session has its override dropped on the next status()', () => {
+    // Pidfile left behind by a killed OpenVPN: /proc entry gone, file present.
+    fs.readFileSync.mockImplementation((p) => {
+      if (p === PID_PATH) return '4242';
+      throw new Error('ENOENT');
+    });
+    fs.existsSync.mockImplementation((p) => !String(p).startsWith('/proc/'));
+    spawn.mockReturnValue(makeMockProcess());
+
+    new VpnManager(BIN, DIR).status();
+
+    const umount = spawn.mock.calls.find((c) => String(c[1]).includes('umount'));
+    expect(umount).toBeDefined();
+    expect(String(umount[1])).toContain('/etc/resolv.conf');
+  });
+
+  test('status() does not spawn cleanup when nothing was ever recorded', () => {
+    new VpnManager(BIN, DIR).status();
+
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 

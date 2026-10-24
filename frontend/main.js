@@ -137,7 +137,120 @@ function applyStatus({ connected, country }) {
     btn.classList.toggle('active', btn.dataset.code === activeCountry);
     btn.disabled = connected && btn.dataset.code !== activeCountry;
   });
+
+  keepFocusAlive();
 }
+
+// ── Remote control ────────────────────────────────────────────────────────────
+//
+// The TV's D-pad sends plain arrow keys and the OK button sends Enter. Chrome
+// 53 has no spatial navigation, so without the below nothing is ever focused:
+// arrows do nothing and OK has no target. Pointer clicks from the Magic Remote
+// keep working as ordinary mouse events either way.
+
+const KEY_ENTER = 13;
+const KEY_LEFT = 37;
+const KEY_UP = 38;
+const KEY_RIGHT = 39;
+const KEY_DOWN = 40;
+
+function focusables() {
+  const all = document.querySelectorAll('.country-btn, footer .btn');
+  return Array.prototype.filter.call(all, (el) => !el.disabled);
+}
+
+function moveFocus(keyCode) {
+  const candidates = focusables();
+  if (!candidates.length) return;
+
+  const current = candidates.indexOf(document.activeElement) >= 0
+    ? document.activeElement
+    : null;
+  if (!current) {
+    candidates[0].focus();
+    return;
+  }
+
+  const from = current.getBoundingClientRect();
+  const horizontal = keyCode === KEY_LEFT || keyCode === KEY_RIGHT;
+  const forward = keyCode === KEY_RIGHT || keyCode === KEY_DOWN;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  candidates.forEach((el) => {
+    if (el === current) return;
+    const to = el.getBoundingClientRect();
+
+    // Edge-to-edge distance in the direction pressed; negative means the
+    // candidate is not that way at all.
+    let along;
+    if (horizontal) {
+      along = forward ? to.left - from.right : from.left - to.right;
+    } else {
+      along = forward ? to.top - from.bottom : from.top - to.bottom;
+    }
+    if (along < -1) return;
+
+    // Whether the two share any extent on the other axis, i.e. whether they
+    // sit in the same row (for left/right) or column (for up/down). Anything
+    // that does must win over anything that does not, or pressing right in a
+    // wrapped grid drops onto the next row instead of moving along this one.
+    const overlap = horizontal
+      ? Math.min(from.bottom, to.bottom) - Math.max(from.top, to.top)
+      : Math.min(from.right, to.right) - Math.max(from.left, to.left);
+
+    const drift = horizontal
+      ? Math.abs((to.top + to.bottom) / 2 - (from.top + from.bottom) / 2)
+      : Math.abs((to.left + to.right) / 2 - (from.left + from.right) / 2);
+
+    // Left/right stays on its row: at the end of one, stopping reads as the
+    // row ending, whereas hopping to another row looks like a glitch. Up/down
+    // may cross, so a short last row still leads somewhere.
+    if (horizontal && overlap <= 0) return;
+
+    const score = (overlap > 0 ? 0 : 100000) + along + drift * 0.3;
+    if (score < bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  });
+
+  if (best) best.focus();
+}
+
+/**
+ * Connecting disables most of the grid, which can leave focus on a disabled
+ * control; the remote then appears dead. Pull focus back to something usable.
+ */
+function keepFocusAlive() {
+  const active = document.activeElement;
+  if (active && focusables().indexOf(active) >= 0) return;
+  const next = focusables()[0];
+  if (next) next.focus();
+}
+
+document.addEventListener('keydown', (event) => {
+  const code = event.keyCode;
+
+  if (code === KEY_LEFT || code === KEY_UP || code === KEY_RIGHT || code === KEY_DOWN) {
+    event.preventDefault();
+    moveFocus(code);
+    return;
+  }
+
+  // OK is activated explicitly rather than left to the browser's native
+  // Enter-on-button handling, which is not dependable across the remote's
+  // pointer and D-pad modes. preventDefault stops a native activation from
+  // also firing and connecting twice.
+  if (code === KEY_ENTER) {
+    const target = document.activeElement;
+    if (target && focusables().indexOf(target) >= 0) {
+      event.preventDefault();
+      target.click();
+    }
+  }
+});
 
 // ── Build country buttons ─────────────────────────────────────────────────────
 
@@ -216,5 +329,9 @@ async function refreshStatus() {
     applyStatus({ connected: false, country: null });
   }
 }
+
+// Give the remote something to start from: refreshStatus() may take a moment,
+// and until something has focus the D-pad has nothing to move from.
+keepFocusAlive();
 
 refreshStatus();

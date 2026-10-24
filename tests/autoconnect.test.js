@@ -21,6 +21,17 @@ beforeEach(() => {
 });
 
 describe('VpnManager.setAutoConnect()', () => {
+  test('the boot runner records the country, so the UI can show it', () => {
+    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('br');
+
+    const runner = fs.writeFileSync.mock.calls
+      .map((c) => String(c[1]))
+      .find((body) => body.includes('spawn('));
+
+    expect(runner).toContain('/tmp/tvpn-state.json');
+    expect(runner).toContain('country: c.country');
+  });
+
   test('the boot runner carries the DNS hooks, like connect() does', () => {
     // Regression: the runner was built separately from connect() and came up
     // without --up/--down, so an auto-connected tunnel leaked every lookup.

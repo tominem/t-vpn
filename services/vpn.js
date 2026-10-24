@@ -184,6 +184,9 @@ VpnManager.prototype.setAutoConnect = function (country) {
     '  for (var k in process.env) { if (k !== \'LD_PRELOAD\') env[k] = process.env[k]; }',
     '  spawn(\'' + binary + '\', args,',
     '    { detached: true, stdio: \'ignore\', env: env }).unref();',
+    // Record the country as connect() does, or the app shows a bare
+    // "Connected" with no server after the TV boots into a tunnel.
+    '  fs.writeFileSync(\'' + STATE_PATH + '\', JSON.stringify({ country: c.country }));',
     '} catch (e) { process.exit(1); }',
   ].join('\n');
 

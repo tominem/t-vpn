@@ -13,6 +13,23 @@ var SPAWN_ERR_PATH = '/tmp/tvpn-spawn-error.log';
 // tunnel leaks every lookup to the ISP. See the script for the details.
 var DNS_SCRIPT = '/media/developer/ovpn-alpine/tvpn-dns-updown.sh';
 
+// Shared by connect() and the boot-time auto-connect runner, so the two paths
+// cannot drift apart. They did once: auto-connect was built separately and
+// came up without the DNS hooks, leaking every lookup after a reboot.
+//
+// --daemon is required rather than merely convenient: the Luna service exits
+// as soon as it has answered, and a detached child does not survive that.
+// OpenVPN daemonizes itself and reports its post-fork pid via --writepid.
+// --log keeps output off the service's pipes, which nothing ever drains.
+var OPENVPN_FLAGS = [
+  '--log', LOG_PATH,
+  '--writepid', PID_PATH,
+  '--script-security', '2',
+  '--up', DNS_SCRIPT,
+  '--down', DNS_SCRIPT,
+  '--daemon',
+];
+
 // webOS starts Luna services with LD_PRELOAD=/usr/lib/libsystrim.so.3, a glibc
 // library, and children inherit it. A musl-linked binary then dies at startup
 // with "Error relocating /usr/lib/libsystrim.so.3: __register_atfork: symbol
@@ -85,20 +102,9 @@ VpnManager.prototype.connect = function (country) {
   var self = this;
   this._clearState();
 
-  // --daemon is required, not just convenient: the Luna service exits as soon
-  // as it has responded, and a merely detached child does not survive that.
-  // OpenVPN daemonizes itself and reports its post-fork pid via --writepid.
-  // --log keeps output off the service's pipes, which nothing ever drains.
-  var args = this._prefixArgs.concat([
-    '--config', configPath,
-    '--auth-user-pass', authPath,
-    '--log', LOG_PATH,
-    '--writepid', PID_PATH,
-    '--script-security', '2',
-    '--up', DNS_SCRIPT,
-    '--down', DNS_SCRIPT,
-    '--daemon',
-  ]);
+  var args = this._prefixArgs
+    .concat(['--config', configPath, '--auth-user-pass', authPath])
+    .concat(OPENVPN_FLAGS);
   var proc = spawn(this._binary, args, {
     detached: true,
     stdio: 'ignore',
@@ -173,8 +179,7 @@ VpnManager.prototype.setAutoConnect = function (country) {
     '  var auth = \'' + configsDir + '/.auth\';',
     '  if (!fs.existsSync(ovpn) || !fs.existsSync(auth)) process.exit(1);',
     '  var args = ' + prefix + '.concat([\'--config\', ovpn,',
-    '    \'--auth-user-pass\', auth, \'--log\', \'' + LOG_PATH + '\',',
-    '    \'--writepid\', \'' + PID_PATH + '\', \'--daemon\']);',
+    '    \'--auth-user-pass\', auth]).concat(' + JSON.stringify(OPENVPN_FLAGS) + ');',
     '  var env = {};',
     '  for (var k in process.env) { if (k !== \'LD_PRELOAD\') env[k] = process.env[k]; }',
     '  spawn(\'' + binary + '\', args,',

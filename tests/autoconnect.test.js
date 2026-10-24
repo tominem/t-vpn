@@ -21,6 +21,22 @@ beforeEach(() => {
 });
 
 describe('VpnManager.setAutoConnect()', () => {
+  test('the boot runner carries the DNS hooks, like connect() does', () => {
+    // Regression: the runner was built separately from connect() and came up
+    // without --up/--down, so an auto-connected tunnel leaked every lookup.
+    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('br');
+
+    const runner = fs.writeFileSync.mock.calls
+      .map((c) => String(c[1]))
+      .find((body) => body.includes('spawn('));
+
+    expect(runner).toBeDefined();
+    expect(runner).toContain('--script-security');
+    expect(runner).toContain('--up');
+    expect(runner).toContain('--down');
+    expect(runner).toContain('tvpn-dns-updown.sh');
+  });
+
   test('writes config.json with autoConnect=true and country', () => {
     const vpn = new VpnManager('/media/developer/openvpn', CONFIGS_DIR);
     const result = vpn.setAutoConnect('br');

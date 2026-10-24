@@ -5,5 +5,17 @@
     "no-console": "off",
     "semi": ["error", "always"],
     "quotes": ["error", "single"]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["frontend/**/*.js"],
+      "env": { "browser": true, "node": false },
+      "globals": { "PalmServiceBridge": "readonly" },
+      "parserOptions": { "ecmaVersion": 2017 }
+    },
+    {
+      "files": ["services/**/*.js"],
+      "parserOptions": { "ecmaVersion": 5 }
+    }
+  ]
 }

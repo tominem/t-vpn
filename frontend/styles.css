@@ -10,19 +10,24 @@ body {
   overflow: hidden;
 }
 
+/* WAM on this TV is Chrome 53, where flexbox `gap` does not exist: it was
+   measured applying 0px. Spacing is therefore done with margins throughout. */
 #app {
   display: flex;
   flex-direction: column;
   height: 100%;
   padding: 60px 100px;
-  gap: 48px;
 }
+#app > * + * { margin-top: 48px; }
+/* Outranks the rule above, which would otherwise cancel the footer's auto
+   margin and let it ride up under the grid. */
+#app > footer { margin-top: auto; }
 
 header {
   display: flex;
   align-items: center;
-  gap: 40px;
 }
+header > * + * { margin-left: 40px; }
 
 h1 { font-size: 64px; font-weight: 700; letter-spacing: 2px; }
 h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
@@ -42,8 +47,10 @@ h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
 .grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
+  /* Cancels the trailing row/column margin the items carry. */
+  margin: -12px;
 }
+.grid > * { margin: 12px; }
 
 .country-btn {
   background: #1e1e1e;
@@ -56,6 +63,19 @@ h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
   transition: background 0.15s, border-color 0.15s;
   min-width: 200px;
   text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.country-btn > span { margin-left: 16px; }
+
+.flag {
+  width: 42px;
+  height: 28px;
+  flex: none;
+  border-radius: 3px;
+  /* A pale flag needs an edge of its own against the dark panel. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
 }
 .country-btn:focus,
 .country-btn:hover   { background: #2a2a2a; border-color: #4cff91; outline: none; }
@@ -65,9 +85,9 @@ h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
 footer {
   display: flex;
   align-items: center;
-  gap: 40px;
   margin-top: auto;
 }
+footer > * + * { margin-left: 40px; }
 
 .btn {
   border: none;

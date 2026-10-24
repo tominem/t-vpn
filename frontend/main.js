@@ -1,15 +1,48 @@
 'use strict';
 
+// Flags are drawn as inline SVG rather than emoji. The TV's font covers only
+// some regional-indicator pairs: measured on device, US/GB/DE/JP render at
+// 50px while BR/NL/AR measure 0px wide, so those three were simply invisible.
+const FLAGS = {
+  us: '<rect width="24" height="16" fill="#b22234"/>'
+    + '<path d="M0 2h24M0 4.6h24M0 7.2h24M0 9.8h24M0 12.4h24M0 15h24" stroke="#fff" stroke-width="1.3"/>'
+    + '<rect width="10" height="8.6" fill="#3c3b6e"/>',
+  br: '<rect width="24" height="16" fill="#009b3a"/>'
+    + '<path d="M12 1.8 22.4 8 12 14.2 1.6 8Z" fill="#fedf00"/>'
+    + '<circle cx="12" cy="8" r="3.4" fill="#002776"/>',
+  gb: '<rect width="24" height="16" fill="#012169"/>'
+    + '<path d="M0 0l24 16M24 0L0 16" stroke="#fff" stroke-width="3.2"/>'
+    + '<path d="M0 0l24 16M24 0L0 16" stroke="#c8102e" stroke-width="1.8"/>'
+    + '<path d="M12 0v16M0 8h24" stroke="#fff" stroke-width="5.4"/>'
+    + '<path d="M12 0v16M0 8h24" stroke="#c8102e" stroke-width="3.2"/>',
+  de: '<rect width="24" height="16" fill="#000"/>'
+    + '<rect y="5.33" width="24" height="5.34" fill="#dd0000"/>'
+    + '<rect y="10.67" width="24" height="5.33" fill="#ffce00"/>',
+  jp: '<rect width="24" height="16" fill="#fff"/>'
+    + '<circle cx="12" cy="8" r="4.8" fill="#bc002d"/>',
+  nl: '<rect width="24" height="16" fill="#21468b"/>'
+    + '<rect width="24" height="10.67" fill="#fff"/>'
+    + '<rect width="24" height="5.33" fill="#ae1c28"/>',
+  ar: '<rect width="24" height="16" fill="#74acdf"/>'
+    + '<rect y="5.33" width="24" height="5.34" fill="#fff"/>'
+    + '<circle cx="12" cy="8" r="2.1" fill="#f6b40e"/>',
+};
+
 /** @type {{ code: string, label: string }[]} */
 const COUNTRIES = [
-  { code: 'us', label: '🇺🇸 United States' },
-  { code: 'br', label: '🇧🇷 Brazil' },
-  { code: 'gb', label: '🇬🇧 United Kingdom' },
-  { code: 'de', label: '🇩🇪 Germany' },
-  { code: 'jp', label: '🇯🇵 Japan' },
-  { code: 'nl', label: '🇳🇱 Netherlands' },
-  { code: 'ar', label: '🇦🇷 Argentina' },
+  { code: 'us', label: 'United States' },
+  { code: 'br', label: 'Brazil' },
+  { code: 'gb', label: 'United Kingdom' },
+  { code: 'de', label: 'Germany' },
+  { code: 'jp', label: 'Japan' },
+  { code: 'nl', label: 'Netherlands' },
+  { code: 'ar', label: 'Argentina' },
 ];
+
+function flagSvg(code) {
+  return '<svg class="flag" viewBox="0 0 24 16" aria-hidden="true">'
+    + (FLAGS[code] || '') + '</svg>';
+}
 
 const SERVICE = 'luna://com.tominem.tvpn.service/';
 
@@ -112,7 +145,7 @@ COUNTRIES.forEach(({ code, label }) => {
   const btn = document.createElement('button');
   btn.className = 'country-btn';
   btn.dataset.code = code;
-  btn.textContent = label;
+  btn.innerHTML = flagSvg(code) + '<span>' + label + '</span>';
 
   btn.addEventListener('click', async () => {
     setMessage(`Connecting to ${label}…`);

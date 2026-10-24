@@ -1,0 +1,20 @@
+#!/bin/sh
+# Reasserts restrictive permissions on the VPN credential directory.
+#
+# Installed as /var/lib/webosbrew/init.d/20-tvpn-perms so it runs on every
+# boot via the Homebrew Channel's run-parts hook. Something in the webOS
+# developer-area setup resets /media/developer to world-writable across
+# reboots, which would otherwise leave the NordVPN service credentials in
+# .auth readable by every process on the TV.
+VPN_DIR=/media/developer/vpn
+
+[ -d "$VPN_DIR" ] || exit 0
+
+chmod 700 "$VPN_DIR"
+[ -f "$VPN_DIR/.auth" ] && chmod 600 "$VPN_DIR/.auth"
+
+for f in "$VPN_DIR"/*.ovpn; do
+  [ -f "$f" ] && chmod 600 "$f"
+done
+
+exit 0

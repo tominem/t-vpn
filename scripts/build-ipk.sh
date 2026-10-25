@@ -52,7 +52,12 @@ mkdir -p "$STAGE/app" "$STAGE/svc/configs" "$STAGE/svc/boot" "$DIST"
 cp "$ROOT/appinfo.json" "$STAGE/app/"
 cp -R "$ROOT/frontend" "$STAGE/app/frontend"
 
-for f in index.js vpn.js package.json services.json run-js-service openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh; do
+# Every module in services/ ships: a hand-kept list let a new one go missing,
+# and the service then dies at load on the TV.
+for m in "$ROOT"/services/*.js; do
+  cp "$m" "$STAGE/svc/$(basename "$m")"
+done
+for f in package.json services.json run-js-service openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh; do
   [ -f "$ROOT/services/$f" ] || die "services/$f is missing"
   cp "$ROOT/services/$f" "$STAGE/svc/$f"
 done

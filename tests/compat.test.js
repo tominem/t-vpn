@@ -92,25 +92,7 @@ describe('service runs on Node 0.12 (ES5)', () => {
     expect(parses('var f = () => 1;', 5)).not.toBeNull();
   });
 
-  test('the generated boot runner is ES5 too', () => {
-    // It is built from strings inside vpn.js, so parsing vpn.js proves nothing
-    // about it; it runs under the same Node 0.12 at boot.
-    jest.resetModules();
-    jest.doMock('fs');
-    const mockFs = require('fs');
-    mockFs.existsSync.mockReturnValue(true);
-    mockFs.writeFileSync.mockImplementation(() => {});
-    mockFs.chmodSync.mockImplementation(() => {});
-    const VpnManager = require('../services/vpn');
-
-    new VpnManager('/bin/x', '/cfg', ['--a', '/b']).setAutoConnect('br');
-
-    const runner = mockFs.writeFileSync.mock.calls
-      .map((c) => String(c[1]))
-      .find((body) => body.includes('spawn('));
-    expect(runner).toBeDefined();
-    expect(parses(runner, 5)).toBeNull();
-
-    jest.dontMock('fs');
+  test('the boot-time runner is a shipped file, so the ES5 check above covers it', () => {
+    expect(files).toEqual(expect.arrayContaining(['autoconnect.js', 'manager.js']));
   });
 });

@@ -9,8 +9,6 @@ const fs = require('fs');
 const path = require('path');
 const VpnManager = require('../services/vpn');
 
-const HOOK_SCRIPT = path.join(__dirname, '..', 'services', 'tvpn-updown.sh');
-
 const CONFIGS_DIR = '/media/developer/vpn';
 const CONFIG_PATH = `${CONFIGS_DIR}/config.json`;
 const STARTUP_PATH = '/var/lib/webosbrew/init.d/99-tvpn';
@@ -24,108 +22,8 @@ beforeEach(() => {
 });
 
 describe('VpnManager.setAutoConnect()', () => {
-  /**
-   * Generates the boot runner and EXECUTES it against fake fs and
-   * child_process modules, so these tests see what it does rather than what
-   * its source text happens to contain. (A text match on the generated source
-   * passed with the country-recording line deleted.)
-   */
-  function runBootRunner(options) {
-    const opts = options || {};
-    const prefix = opts.prefix || ['--library-path', '/libs', '/bin/openvpn'];
-    new VpnManager('/bin/launch', CONFIGS_DIR, prefix).setAutoConnect('br');
-
-    const source = fs.writeFileSync.mock.calls
-      .map((c) => String(c[1]))
-      .find((body) => body.includes('spawn('));
-    expect(source).toBeDefined();
-
-    const spawned = [];
-    const written = {};
-    const fakeFs = {
-      readFileSync: () => JSON.stringify(opts.config ||
-        { autoConnect: true, country: 'br' }),
-      existsSync: () => true,
-      writeFileSync: (file, data) => { written[file] = String(data); },
-    };
-    const fakeChild = {
-      spawn: (bin, args, spawnOpts) => {
-        spawned.push({ bin, args, opts: spawnOpts });
-        return { unref: () => {} };
-      },
-    };
-    // The real process.exit stops the script, so the fake must too, or the
-    // code after an early exit(0) would keep running and spawn anyway. The
-    // runner wraps itself in try/catch, which swallows the first throw and
-    // calls exit(1); only the FIRST exit call is the decision under test.
-    const exitSignal = new Error('process.exit');
-    const fakeProcess = {
-      env: opts.env || { PATH: '/usr/bin', LD_PRELOAD: '/usr/lib/libsystrim.so.3' },
-      exit: jest.fn(() => { throw exitSignal; }),
-    };
-
-    try {
-      // eslint-disable-next-line no-new-func
-      new Function('require', 'process', source)(
-        (name) => (name === 'fs' ? fakeFs : fakeChild),
-        fakeProcess
-      );
-    } catch (e) {
-      if (e !== exitSignal) throw e;
-    }
-    return { spawned, written, exit: fakeProcess.exit };
-  }
-
-  test('the boot runner records the country, so the UI can show it', () => {
-    const { written } = runBootRunner();
-
-    expect(JSON.parse(written['/tmp/tvpn-state.json'])).toEqual({ country: 'br' });
-  });
-
-  test('the boot runner carries the DNS hooks, like connect() does', () => {
-    // Regression: the runner was built separately from connect() and came up
-    // without --up/--down, so an auto-connected tunnel leaked every lookup.
-    const { spawned } = runBootRunner();
-
-    expect(spawned).toHaveLength(1);
-    const args = spawned[0].args;
-    expect(args).toEqual(expect.arrayContaining([
-      '--script-security', '2',
-      '--up', HOOK_SCRIPT,
-      '--down', HOOK_SCRIPT,
-      '--daemon',
-    ]));
-  });
-
-  test('the boot runner launches the same way connect() does', () => {
-    const { spawned } = runBootRunner();
-
-    expect(spawned[0].bin).toBe('/bin/launch');
-    expect(spawned[0].args.slice(0, 3)).toEqual(['--library-path', '/libs', '/bin/openvpn']);
-    expect(spawned[0].args).toEqual(expect.arrayContaining([
-      '--config', `${CONFIGS_DIR}/br.ovpn`,
-      '--auth-user-pass', `${CONFIGS_DIR}/.auth`,
-      '--writepid', '/tmp/tvpn-openvpn.pid',
-    ]));
-    expect(spawned[0].opts).toMatchObject({ detached: true, stdio: 'ignore' });
-  });
-
-  test('the boot runner strips LD_PRELOAD from what it starts', () => {
-    const { spawned } = runBootRunner();
-
-    expect(spawned[0].opts.env).not.toHaveProperty('LD_PRELOAD');
-    expect(spawned[0].opts.env).toHaveProperty('PATH', '/usr/bin');
-  });
-
-  test('the boot runner does nothing when auto-connect was turned off', () => {
-    const { spawned, written, exit } = runBootRunner({
-      config: { autoConnect: false, country: 'br' },
-    });
-
-    expect(exit.mock.calls[0]).toEqual([0]);
-    expect(spawned).toHaveLength(0);
-    expect(written).toEqual({});
-  });
+  const BOOT_RUNNER = path.join(__dirname, '..', 'services', 'autoconnect.js');
+  const LEGACY_RUNNER = `${CONFIGS_DIR}/autoconnect.js`;
 
   test('writes config.json with autoConnect=true and country', () => {
     const vpn = new VpnManager('/media/developer/openvpn', CONFIGS_DIR);
@@ -138,25 +36,38 @@ describe('VpnManager.setAutoConnect()', () => {
     expect(written).toEqual({ autoConnect: true, country: 'br' });
   });
 
-  test('creates executable startup script at HBC init.d path', () => {
-    const vpn = new VpnManager('/media/developer/openvpn', CONFIGS_DIR);
-    vpn.setAutoConnect('us');
+  test('the boot script runs the autoconnect.js that ships with the service', () => {
+    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('us');
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      STARTUP_PATH,
-      expect.stringContaining('autoconnect.js')
+      STARTUP_PATH, `#!/bin/sh\nnode ${BOOT_RUNNER}\n`
     );
     expect(fs.chmodSync).toHaveBeenCalledWith(STARTUP_PATH, '755');
   });
 
-  test('writes autoconnect.js runner script to configs dir', () => {
-    const vpn = new VpnManager('/media/developer/openvpn', CONFIGS_DIR);
-    vpn.setAutoConnect('de');
+  test('the boot script carries no OpenVPN paths or flags that an upgrade could leave stale', () => {
+    // Regression: the boot runner used to be generated with the binary, hook and
+    // flags of the version that wrote it. After an upgrade it still pointed at a
+    // directory that no longer existed, so auto-connect silently stopped working.
+    new VpnManager('/media/developer/openvpn', CONFIGS_DIR, ['--library-path', '/libs'])
+      .setAutoConnect('de');
 
-    const runnerCall = fs.writeFileSync.mock.calls
-      .find(([p]) => p === `${CONFIGS_DIR}/autoconnect.js`);
-    expect(runnerCall).toBeTruthy();
-    expect(runnerCall[1]).toContain('openvpn');
+    const everything = fs.writeFileSync.mock.calls.map((c) => String(c[1])).join('\n');
+    expect(everything).not.toMatch(/openvpn|--up|--down|--library-path|ovpn-alpine/);
+  });
+
+  test('removes the runner older versions generated into the configs directory', () => {
+    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('de');
+
+    expect(fs.unlinkSync).toHaveBeenCalledWith(LEGACY_RUNNER);
+    expect(fs.writeFileSync.mock.calls.map(([p]) => p)).not.toContain(LEGACY_RUNNER);
+  });
+
+  test('still succeeds when there is no old runner to remove', () => {
+    fs.unlinkSync.mockImplementation(() => { throw new Error('ENOENT'); });
+
+    expect(new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('de'))
+      .toEqual({ ok: true });
   });
 });
 
@@ -168,6 +79,7 @@ describe('VpnManager.clearAutoConnect()', () => {
     expect(result).toEqual({ ok: true });
     expect(fs.unlinkSync).toHaveBeenCalledWith(CONFIG_PATH);
     expect(fs.unlinkSync).toHaveBeenCalledWith(STARTUP_PATH);
+    expect(fs.unlinkSync).toHaveBeenCalledWith(`${CONFIGS_DIR}/autoconnect.js`);
   });
 
   test('returns ok even if files do not exist', () => {

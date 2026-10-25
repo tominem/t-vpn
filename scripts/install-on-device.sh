@@ -8,6 +8,7 @@
 #   - the server configs go to /media/developer/vpn (700; each file 600)
 #   - the boot scripts go to the Homebrew Channel's init.d, so entropy seeding
 #     and the credential permissions are redone on every boot
+#   - an auto-connect set up by an older version is migrated
 #   - the Luna bus is told about the app and the service
 #
 # It never touches .auth: that file holds the user's NordVPN service credentials
@@ -47,6 +48,17 @@ echo "installed boot scripts into $INITD"
 if [ -z "${TVPN_NO_START:-}" ]; then
   sh "$INITD/20-tvpn-perms"
   sh "$INITD/10-entropy-seed"
+fi
+
+# Auto-connect from an earlier version: its runner was generated with that
+# version's binary and flags, and kept pointing at files an upgrade replaces, so
+# the TV booted without a VPN. The runner now ships with the service; drop the
+# old one and, only if the user had auto-connect on, repoint the boot script.
+rm -f "$VPN_DIR/autoconnect.js"
+if grep -q '"autoConnect": *true' "$VPN_DIR/config.json" 2>/dev/null; then
+  printf '#!/bin/sh\nnode %s/autoconnect.js\n' "$SVC_DIR" > "$INITD/99-tvpn"
+  chmod 755 "$INITD/99-tvpn"
+  echo "auto-connect: boot script points at $SVC_DIR/autoconnect.js"
 fi
 
 TVPN_SVC_DIR="$SVC_DIR" sh "$SVC_DIR/install-luna-registration.sh"

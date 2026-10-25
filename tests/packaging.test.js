@@ -314,11 +314,26 @@ rm -rf "$w"
     ['appinfo.json', 'frontend/index.html', 'frontend/main.js', 'frontend/styles.css',
       'frontend/icon.png', 'frontend/icon_large.png']
       .forEach((rel) => expect(fs.existsSync(path.join(stage, 'app', rel))).toBe(true));
-    ['index.js', 'vpn.js', 'package.json', 'services.json', 'run-js-service',
+    ['index.js', 'vpn.js', 'manager.js', 'autoconnect.js', 'package.json', 'services.json', 'run-js-service',
       'openvpn-launch.sh', 'tvpn-updown.sh', 'tvpn-killswitch.sh', 'install-on-device.sh',
       'install-luna-registration.sh', 'boot/10-entropy-seed', 'boot/20-tvpn-perms',
       'ovpn-runtime/bin/openvpn', 'ovpn-runtime/lib/ld-musl-armhf.so.1']
       .forEach((rel) => expect(fs.existsSync(path.join(stage, 'svc', rel))).toBe(true));
+  });
+
+  test('ships every module the service loads, so it can start on the TV', () => {
+    // Regression guard: the file list in build-ipk.sh is written by hand, and a
+    // module added to services/ but not to it makes the service die at load.
+    const { stage } = build();
+    const dir = path.join(ROOT, 'services');
+    const modules = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
+
+    expect(modules.length).toBeGreaterThanOrEqual(4);
+    modules.forEach((m) => expect(fs.existsSync(path.join(stage, 'svc', m))).toBe(true));
+    modules.forEach((m) => {
+      [...fs.readFileSync(path.join(dir, m), 'utf8').matchAll(/require\('\.\/([\w-]+)'\)/g)]
+        .forEach(([, dep]) => expect(fs.existsSync(path.join(stage, 'svc', `${dep}.js`))).toBe(true));
+    });
   });
 
   test('installs each server config under its country code', () => {
@@ -352,7 +367,7 @@ rm -rf "$w"
       'install-luna-registration.sh', 'boot/10-entropy-seed', 'boot/20-tvpn-perms',
       'ovpn-runtime/bin/openvpn', 'ovpn-runtime/lib/ld-musl-armhf.so.1']
       .forEach((rel) => expect(svc(rel) & 0o111).not.toBe(0));
-    ['index.js', 'vpn.js', 'package.json', 'services.json', 'configs/us.ovpn']
+    ['index.js', 'vpn.js', 'manager.js', 'autoconnect.js', 'package.json', 'services.json', 'configs/us.ovpn']
       .forEach((rel) => expect(svc(rel) & 0o111).toBe(0));
   });
 
@@ -602,6 +617,57 @@ describe('install-on-device.sh', () => {
     expect(install(f).status).toBe(0);
     expect(install(f).status).toBe(0);
     expect(fs.readdirSync(f.vpn).sort()).toEqual(['br.ovpn', 'us.ovpn']);
+  });
+
+  describe('auto-connect left behind by an earlier version', () => {
+    const autoOn = (f) => write(path.join(f.vpn, 'config.json'), '{"autoConnect":true,"country":"br"}');
+
+    test('removes the generated runner, which points at files an upgrade replaces', () => {
+      const f = fixture();
+      write(path.join(f.vpn, 'autoconnect.js'), 'spawn(\'/media/developer/ovpn-alpine/openvpn\')\n');
+
+      expect(install(f).status).toBe(0);
+
+      expect(fs.existsSync(path.join(f.vpn, 'autoconnect.js'))).toBe(false);
+    });
+
+    test('points the boot script at the runner shipped with this version', () => {
+      const f = fixture();
+      autoOn(f);
+      write(path.join(f.initd, '99-tvpn'), '#!/bin/sh\nnode /media/developer/vpn/autoconnect.js\n', 0o755);
+
+      expect(install(f).status).toBe(0);
+
+      expect(fs.readFileSync(path.join(f.initd, '99-tvpn'), 'utf8'))
+        .toBe(`#!/bin/sh\nnode ${f.svc}/autoconnect.js\n`);
+      expect(mode(path.join(f.initd, '99-tvpn'))).toBe(0o755);
+    });
+
+    test('does not turn auto-connect on for someone who never did', () => {
+      const f = fixture();
+
+      expect(install(f).status).toBe(0);
+
+      expect(fs.existsSync(path.join(f.initd, '99-tvpn'))).toBe(false);
+    });
+
+    test('does not turn it back on for someone who switched it off', () => {
+      const f = fixture();
+      write(path.join(f.vpn, 'config.json'), '{"autoConnect":false,"country":"br"}');
+
+      expect(install(f).status).toBe(0);
+
+      expect(fs.existsSync(path.join(f.initd, '99-tvpn'))).toBe(false);
+    });
+
+    test('keeps the saved choice', () => {
+      const f = fixture();
+      autoOn(f);
+
+      install(f);
+
+      expect(fs.readFileSync(path.join(f.vpn, 'config.json'), 'utf8')).toBe('{"autoConnect":true,"country":"br"}');
+    });
   });
 
   test('refuses to run beside a package with no configs directory', () => {

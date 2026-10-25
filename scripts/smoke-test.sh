@@ -8,7 +8,7 @@
 # kill switch really blocks traffic when the tunnel dies, and that disconnecting
 # puts everything back.
 #
-#   scripts/smoke-test.sh [tv-host] [country]
+#   scripts/smoke-test.sh [tv-host] [country] [country-to-switch-to]
 #
 #   SMOKE_SKIP_CRASH=1   skip the second phase, which kills the tunnel on
 #                        purpose and so cuts the TV's internet for a few seconds
@@ -23,6 +23,8 @@
 . "$(cd "$(dirname "$0")" && pwd)/lib-tv.sh"
 resolve_tv "${1:-}" || exit 2
 COUNTRY=${2:-br}
+# A second country for the switching check; must differ from the first.
+SWITCH_TO=${3:-nl}
 
 SSH=tv_ssh
 FAILED=0
@@ -55,7 +57,8 @@ wait_for_tunnel() {
 }
 
 connect() {
-  case "$(luna connect "{\"country\":\"$COUNTRY\"}" 15)" in
+  # connect [country]; defaults to the one under test.
+  case "$(luna connect "{\"country\":\"${1:-$COUNTRY}\"}" 15)" in
     *'"ok":true'*) pass "connect accepted" ;;
     *) fail "connect accepted" ;;
   esac
@@ -180,6 +183,30 @@ case "$(luna status '{}' 14)" in
   *'"connected":false'*'"blocked":false'*|*'"blocked":false'*'"connected":false'*) pass "status reports disconnected, not blocked" ;;
   *) fail "status reports disconnected, not blocked (got: $(luna status '{}'))" ;;
 esac
+
+echo "Switching country"
+# The app only allows this as disconnect-then-connect. Proves the second tunnel
+# is a different server, that the kill switch follows it, and that nothing of the
+# first one is left behind.
+first_ip=$($SSH 'curl -s -m 10 https://api.ipify.org' 2>/dev/null)
+connect "$COUNTRY" >/dev/null
+first_ip=$($SSH 'curl -s -m 10 https://api.ipify.org' 2>/dev/null)
+luna disconnect '{}' 14 >/dev/null; sleep 4
+connect "$SWITCH_TO"
+case "$(luna status '{}' 14)" in
+  *"\"country\":\"$SWITCH_TO\""*) pass "status reports $SWITCH_TO after the switch" ;;
+  *) fail "status reports $SWITCH_TO after the switch (got: $(luna status '{}'))" ;;
+esac
+second_ip=$($SSH 'curl -s -m 10 https://api.ipify.org' 2>/dev/null)
+if [ -n "$second_ip" ] && [ "$second_ip" != "$first_ip" ]; then
+  pass "traffic leaves through a different address ($first_ip then $second_ip)"
+else
+  fail "traffic leaves through a different address (got '$first_ip' then '$second_ip')"
+fi
+check "the kill switch lets the new server through" \
+  "iptables -S TVPN_KILL | grep -q -- \"-d \$(grep -m1 '^remote ' /media/developer/vpn/$SWITCH_TO.ovpn | cut -d' ' -f2)/32\""
+check "only one tunnel is running" '[ "$(ps | grep -c "[o]penvpn\|[l]d-musl")" = 1 ]'
+luna disconnect '{}' 14 >/dev/null; sleep 4
 
 # What the TV does at every boot when auto-connect is on: run the init.d script.
 # Skipped for someone who has it off. This is the path an upgrade once broke

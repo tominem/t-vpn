@@ -156,6 +156,31 @@ describe('connecting', () => {
     expect(document.getElementById('status-badge').textContent).toBe('Disconnected');
   });
 
+  test('switching country: disconnect, then pick another, and only that one stays active', async () => {
+    // While connected the other countries are disabled on purpose, so a switch
+    // is disconnect-then-connect. Checks the whole sequence, not each half.
+    const bridge = loadApp({ status: { connected: true, country: 'br', pid: 7 } });
+    await settle();
+    const button = (code) => document.querySelector(`.country-btn[data-code="${code}"]`);
+    expect(button('nl').disabled).toBe(true);
+
+    bridge.reply('disconnect', { returnValue: true, ok: true });
+    document.getElementById('btn-disconnect').click();
+    await settle();
+    expect(button('nl').disabled).toBe(false);
+
+    bridge.reply('connect', { returnValue: true, ok: true });
+    button('nl').click();
+    await settle();
+
+    expect(bridge.callsTo('connect').slice(-1)[0].params).toEqual({ country: 'nl' });
+    expect(document.getElementById('status-badge').textContent).toBe('Connected · NL');
+    expect(button('nl').classList.contains('active')).toBe(true);
+    expect(button('br').classList.contains('active')).toBe(false);
+    expect(button('br').disabled).toBe(true);
+    expect(button('nl').disabled).toBe(false);
+  });
+
   test('disconnect asks the service and clears the grid', async () => {
     const bridge = loadApp({ status: { connected: true, country: 'br', pid: 7 } });
     await settle();

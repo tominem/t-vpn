@@ -6,3 +6,4 @@ coverage/
 ovpn/.auth
 wireguard/
 build/
+__pycache__/

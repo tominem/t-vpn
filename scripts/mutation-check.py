@@ -3,33 +3,36 @@ Mutation check: reintroduce each bug that was fixed on device and confirm the
 test suite fails. A suite that stays green with a known bug put back is not
 protecting anything.
 
-    python3 scripts/mutation-check.py             run every mutation
-    python3 scripts/mutation-check.py --restore   put files back after an interrupted run
+    python3 scripts/mutation-check.py                 every mutation (before a release)
+    python3 scripts/mutation-check.py --changed       only mutations touching files that
+                                                      differ from origin/main (or HEAD)
+    python3 scripts/mutation-check.py --changed REF   ... differing from REF
+    python3 scripts/mutation-check.py --jobs N        N mutations at a time (default: half the cores, max 4)
 
-Exits non-zero if any mutation survives or any anchor no longer matches (an
-anchor that stops matching means the code moved and the mutation silently
-tests nothing, so it is reported rather than skipped).
+Exits non-zero if any mutation survives, any anchor no longer matches, or any
+run was inconclusive. An anchor that stops matching means the code moved and
+the mutation silently tests nothing, so it is reported rather than skipped. A
+run that only failed by timing out proves nothing about the tests, so it is
+reported as inconclusive rather than counted as caught.
 
-A mutated file on disk is the danger here, so this is built to be interrupted:
-- each original is saved to build/mutation-backup/ BEFORE it is touched, in a
-  fixed place, never a random temp directory nobody can find afterwards
-- SIGINT, SIGTERM and SIGHUP all restore before exiting. A process started in
-  the background inherits SIGINT as ignored, which silently disables Python's
-  own handling, so the handlers are installed explicitly
-- if a run was killed outright (SIGKILL, power loss) the saved originals are
-  still there, and the next run refuses to start until --restore puts them back
+Every mutation runs in its own throw-away copy of the repository, so the real
+files are never touched: interrupting this at any point, or running several at
+once, cannot leave a mutated file behind. (wireguard/, which holds a key, is
+never copied.)
 
 Each mutation runs only the test files likely to catch it first; if they all
 pass, the whole suite decides, so "survived" always means the full suite.
 """
+import concurrent.futures
 import os
+import queue
 import shutil
-import signal
 import subprocess
 import sys
+import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BACKUP = os.path.join(REPO, 'build', 'mutation-backup')
+COPY_IGNORE = shutil.ignore_patterns('node_modules', 'build', 'coverage', '.git', 'wireguard', '.DS_Store')
 
 FRONTEND_TESTS = ['tests/frontend.test.js', 'tests/compat.test.js']
 SERVICE_TESTS = ['tests/vpn.test.js', 'tests/autoconnect.test.js', 'tests/service.test.js', 'tests/compat.test.js']
@@ -50,6 +53,25 @@ DEFAULT_TESTS = [
     ('scripts/10-entropy-seed', PACKAGING_TESTS),
     ('scripts/', SHELL_TESTS),
 ]
+
+
+# Within a test file, the describe blocks worth running first for a given target
+# (a jest -t pattern). scripts.test.js alone takes over two minutes, almost all of
+# it other scripts' tests, so a kill switch mutation would wait on those for
+# nothing. Only the first, narrow run uses it: a mutation that survives it is
+# retried against the whole suite, so this saves time without ever hiding a bug.
+FILTERS = {
+    'services/tvpn-killswitch.sh': 'tvpn-killswitch|kill switch',
+    'services/tvpn-updown.sh': 'tvpn-updown',
+    'services/openvpn-launch.sh': 'openvpn-launch',
+    'scripts/20-tvpn-perms': '20-tvpn-perms',
+    'scripts/install-luna-registration.sh': 'install-luna-registration',
+    'scripts/build-ipk.sh': 'build-ipk',
+    'scripts/fetch-openvpn-runtime.sh': 'fetch-openvpn-runtime',
+    'scripts/install-on-device.sh': 'install-on-device',
+    'scripts/install-on-tv.sh': 'install-on-tv',
+    'scripts/10-entropy-seed': '10-entropy-seed',
+}
 
 
 def tests_for(rel):
@@ -410,94 +432,157 @@ MUTATIONS = [
 ]
 
 
-def run_suite(tests=None):
-    res = subprocess.run(
-        ['npx', 'jest', '--silent', '--coverage=false'] + list(tests or []),
-        cwd=REPO, capture_output=True, text=True, timeout=900,
-    )
+def tests_of(mutation):
+    return mutation[4] if len(mutation) > 4 else tests_for(mutation[1])
+
+
+def select(mutations, changed):
+    """The mutations worth running when only `changed` files differ: those whose
+    target file changed, or whose tests changed (a weaker test can let it through)."""
+    changed = set(changed)
+    return [m for m in mutations if m[1] in changed or changed & set(tests_of(m) or [])]
+
+
+def changed_files(ref):
+    """Files that differ from `ref`, including uncommitted and untracked ones."""
+    def git(*args):
+        res = subprocess.run(['git'] + list(args), cwd=REPO, capture_output=True, text=True)
+        return res.stdout.split('\n') if res.returncode == 0 else None
+
+    for base in ([ref] if ref else ['origin/main', 'HEAD']):
+        diff = git('diff', '--name-only', base)
+        if diff is not None:
+            untracked = git('ls-files', '--others', '--exclude-standard') or []
+            return sorted(f for f in diff + untracked if f), base
+    return [], None
+
+
+def run_suite(cwd, tests=None, workers=None, only=None):
+    cmd = ['npx', 'jest', '--silent', '--coverage=false']
+    if only:
+        cmd += ['-t', only]
+    if workers:
+        cmd.append('--maxWorkers=%d' % workers)
+    try:
+        res = subprocess.run(cmd + list(tests or []), cwd=cwd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return None, 'timed out'
     return res.returncode, res.stdout + res.stderr
 
 
-def saved_originals():
-    return sorted(os.listdir(BACKUP)) if os.path.isdir(BACKUP) else []
+def make_workdir(parent, index):
+    dst = os.path.join(parent, 'w%d' % index)
+    shutil.copytree(REPO, dst, ignore=COPY_IGNORE)
+    os.symlink(os.path.join(REPO, 'node_modules'), os.path.join(dst, 'node_modules'))
+    return dst
 
 
-def restore_saved():
-    """Put back every original a previous run saved. Returns the files restored."""
-    restored = []
-    for name in saved_originals():
-        rel = name.replace('__', '/')
-        shutil.copy2(os.path.join(BACKUP, name), os.path.join(REPO, rel))
-        os.remove(os.path.join(BACKUP, name))
-        restored.append(rel)
-    return restored
+def judge(code, out):
+    """caught / survived / inconclusive. Failing only by timeout is not evidence."""
+    if code is None:
+        return 'inconclusive'
+    if code == 0:
+        return 'survived'
+    failed_by_assertion = 'Exceeded timeout' not in out or 'Expected' in out or 'expect(' in out
+    return 'caught' if failed_by_assertion else 'inconclusive'
 
 
-def _interrupt(signum, frame):
-    raise KeyboardInterrupt()
+def run_one(mutation, workdir, workers):
+    name, rel, old, new = mutation[:4]
+    tests = tests_of(mutation)
+    path = os.path.join(workdir, rel)
+    original = open(path).read()
+    if original.count(old) != 1:
+        return name, 'bad-anchor', original.count(old)
+    try:
+        open(path, 'w').write(original.replace(old, new, 1))
+        verdict = judge(*run_suite(workdir, tests, workers, FILTERS.get(rel)))
+        if verdict == 'survived' and (tests or FILTERS.get(rel)):
+            verdict = judge(*run_suite(workdir, None, workers))
+    finally:
+        open(path, 'w').write(original)
+    return name, verdict, None
 
 
-def run_mutations():
-    survivors, caught, bad_anchor = [], [], []
-
-    code, _ = run_suite()
+def run_mutations(mutations, jobs):
+    code, out = run_suite(REPO)
     if code != 0:
-        print('BASELINE IS RED - fix before mutating')
+        print('BASELINE IS RED - fix before mutating\n' + out[-1500:])
         return 2
 
-    os.makedirs(BACKUP, exist_ok=True)
-    for mutation in MUTATIONS:
-        name, rel, old, new = mutation[:4]
-        tests = mutation[4] if len(mutation) > 4 else tests_for(rel)
-        path = os.path.join(REPO, rel)
-        backup = os.path.join(BACKUP, rel.replace('/', '__'))
-        shutil.copy2(path, backup)          # saved BEFORE anything is changed
-        try:
-            src = open(path).read()
-            if src.count(old) != 1:
-                bad_anchor.append((name, src.count(old)))
-                continue
-            open(path, 'w').write(src.replace(old, new, 1))
-            code, out = run_suite(tests)
-            if code == 0 and tests:
-                code, out = run_suite()
-            (caught if code != 0 else survivors).append(name)
-            print(('CAUGHT   ' if code != 0 else 'SURVIVED ') + name, flush=True)
-        finally:
-            shutil.copy2(backup, path)
-            os.remove(backup)
+    workers = max(1, (os.cpu_count() or 2) // jobs)
+    parent = tempfile.mkdtemp(prefix='tvpn-mutation-')
+    results = []
+    try:
+        free = queue.Queue()
+        for i in range(jobs):
+            free.put(make_workdir(parent, i))
 
-    code, _ = run_suite()
-    print('\n--- restored; baseline green again: %s' % (code == 0))
-    print('caught %d / %d' % (len(caught), len(MUTATIONS) - len(bad_anchor)))
-    for n, c in bad_anchor:
-        print('BAD ANCHOR (%d matches): %s' % (c, n))
-    for n in survivors:
-        print('SURVIVOR: ' + n)
-    return 1 if (survivors or bad_anchor) else 0
+        def task(mutation):
+            workdir = free.get()
+            try:
+                return run_one(mutation, workdir, workers)
+            finally:
+                free.put(workdir)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            for name, verdict, extra in pool.map(task, mutations):
+                results.append((name, verdict, extra))
+                label = {'caught': 'CAUGHT   ', 'survived': 'SURVIVED ',
+                         'inconclusive': 'UNCLEAR  ', 'bad-anchor': 'BAD ANCHOR '}[verdict]
+                print(label + name + (' (%d matches)' % extra if verdict == 'bad-anchor' else ''), flush=True)
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+
+    count = lambda v: [n for n, verdict, _ in results if verdict == v]
+    print('\ncaught %d / %d' % (len(count('caught')), len(mutations)))
+    for verdict, label in (('survived', 'SURVIVOR'), ('inconclusive', 'INCONCLUSIVE (timed out, rerun it)'),
+                           ('bad-anchor', 'BAD ANCHOR')):
+        for n in count(verdict):
+            print('%s: %s' % (label, n))
+    return 0 if len(count('caught')) == len(mutations) else 1
+
+
+def default_jobs():
+    return max(1, min(4, (os.cpu_count() or 2) // 2))
+
+
+def parse_args(argv):
+    """-> (changed, ref, jobs). `changed` is whether --changed was given."""
+    changed, ref, jobs = False, None, default_jobs()
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == '--changed':
+            changed = True
+            if i + 1 < len(argv) and not argv[i + 1].startswith('--'):
+                ref = argv[i + 1]
+                i += 1
+        elif arg == '--jobs' and i + 1 < len(argv) and argv[i + 1].isdigit() and int(argv[i + 1]) > 0:
+            jobs = int(argv[i + 1])
+            i += 1
+        else:
+            raise SystemExit('usage: mutation-check.py [--changed [REF]] [--jobs N]')
+        i += 1
+    return changed, ref, jobs
 
 
 def main():
-    if '--restore' in sys.argv:
-        files = restore_saved()
-        print('restored: %s' % (', '.join(files) if files else 'nothing to restore'))
-        return 0
-
-    left = saved_originals()
-    if left:
-        print('A previous run was interrupted and left saved originals in build/mutation-backup/:')
-        for name in left:
-            print('  ' + name.replace('__', '/'))
-        print('Those files may currently contain a mutation. Run:')
-        print('  python3 scripts/mutation-check.py --restore')
-        return 2
-
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _interrupt)
+    changed, ref, jobs = parse_args(sys.argv[1:])
+    mutations = MUTATIONS
+    if changed:
+        files, base = changed_files(ref)
+        mutations = select(MUTATIONS, files)
+        print('%d file(s) differ from %s; %d of %d mutations apply'
+              % (len(files), base, len(mutations), len(MUTATIONS)), flush=True)
+        if not mutations:
+            print('nothing to mutate')
+            return 0
+    jobs = min(jobs, len(mutations))
     try:
-        return run_mutations()
+        return run_mutations(mutations, jobs)
     except KeyboardInterrupt:
-        print('\ninterrupted: originals restored')
+        print('\ninterrupted (no repository file was touched)')
         return 130
 
 

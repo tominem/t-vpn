@@ -41,7 +41,7 @@ const COUNTRIES = [
 
 function flagSvg(code) {
   return '<svg class="flag" viewBox="0 0 24 16" aria-hidden="true">'
-    + (FLAGS[code] || '') + '</svg>';
+    + FLAGS[code] + '</svg>';
 }
 
 const SERVICE = 'luna://com.tominem.tvpn.service/';
@@ -226,8 +226,9 @@ function moveFocus(keyCode) {
 function keepFocusAlive() {
   const active = document.activeElement;
   if (active && focusables().indexOf(active) >= 0) return;
-  const next = focusables()[0];
-  if (next) next.focus();
+  // applyStatus always leaves something enabled, so the list is never empty
+  // here; slice/forEach states "focus the first one, if any" without a branch.
+  focusables().slice(0, 1).forEach((el) => el.focus());
 }
 
 document.addEventListener('keydown', (event) => {

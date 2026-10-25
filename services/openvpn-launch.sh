@@ -22,6 +22,8 @@ for fd in $(ls /proc/$$/fd 2>/dev/null); do
   esac
 done
 
-# Overridable only so the tests can point this at a stand-in loader.
-DIR=${TVPN_OVPN_DIR:-/media/developer/ovpn-alpine}
+# The OpenVPN runtime (musl loader, libraries, binary) is packaged beside this
+# script, so the service directory is self-contained. TVPN_OVPN_DIR exists only
+# so the tests can point this at a stand-in loader.
+DIR=${TVPN_OVPN_DIR:-$(cd "$(dirname "$0")" && pwd)/ovpn-runtime}
 exec "$DIR/lib/ld-musl-armhf.so.1" --library-path "$DIR/lib" "$DIR/bin/openvpn" "$@"

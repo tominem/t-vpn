@@ -11,7 +11,7 @@ var PID_PATH = '/tmp/tvpn-openvpn.pid';
 var SPAWN_ERR_PATH = '/tmp/tvpn-spawn-error.log';
 // Redirects the resolver to the pushed DNS while connected; without it the
 // tunnel leaks every lookup to the ISP. See the script for the details.
-var DNS_SCRIPT = '/media/developer/ovpn-alpine/tvpn-dns-updown.sh';
+var HOOK_SCRIPT = path.join(__dirname, 'tvpn-updown.sh');
 
 // Shared by connect() and the boot-time auto-connect runner, so the two paths
 // cannot drift apart. They did once: auto-connect was built separately and
@@ -25,8 +25,8 @@ var OPENVPN_FLAGS = [
   '--log', LOG_PATH,
   '--writepid', PID_PATH,
   '--script-security', '2',
-  '--up', DNS_SCRIPT,
-  '--down', DNS_SCRIPT,
+  '--up', HOOK_SCRIPT,
+  '--down', HOOK_SCRIPT,
   '--daemon',
 ];
 

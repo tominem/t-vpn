@@ -92,7 +92,7 @@ MUTATIONS = [
 
     ('DNS hooks missing from connect()',
      'services/vpn.js',
-     "  '--up', DNS_SCRIPT,\n  '--down', DNS_SCRIPT,\n",
+     "  '--up', HOOK_SCRIPT,\n  '--down', HOOK_SCRIPT,\n",
      ""),
 
     ('boot runner drops the country record',
@@ -106,17 +106,17 @@ MUTATIONS = [
      ""),
 
     ('dns script stacks mounts',
-     'scripts/tvpn-dns-updown.sh',
+     'services/tvpn-updown.sh',
      '    mountpoint -q "$RESOLV" || mount --bind "$OVERRIDE" "$RESOLV"',
      '    mount --bind "$OVERRIDE" "$RESOLV"'),
 
     ('dns script mounts even with no DNS pushed',
-     'scripts/tvpn-dns-updown.sh',
+     'services/tvpn-updown.sh',
      "    grep -q '^nameserver ' \"$OVERRIDE\" || exit 0\n",
      ""),
 
     ('dns down never unmounts',
-     'scripts/tvpn-dns-updown.sh',
+     'services/tvpn-updown.sh',
      '    mountpoint -q "$RESOLV" && umount "$RESOLV"',
      '    true'),
 

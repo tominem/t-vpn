@@ -11,13 +11,14 @@ jest.mock('fs');
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 const VpnManager = require('../services/vpn');
 
 const BIN = '/media/developer/launch.sh';
 const DIR = '/media/developer/vpn';
 const PID_PATH = '/tmp/tvpn-openvpn.pid';
 const STATE_PATH = '/tmp/tvpn-state.json';
-const DNS_SCRIPT = '/media/developer/ovpn-alpine/tvpn-dns-updown.sh';
+const HOOK_SCRIPT = path.join(__dirname, '..', 'services', 'tvpn-updown.sh');
 
 /** connect() also spawns housekeeping commands; find the OpenVPN one. */
 function openvpnCall() {
@@ -70,8 +71,8 @@ describe('VpnManager.connect()', () => {
         '--log', '/tmp/tvpn-openvpn.log',
         '--writepid', PID_PATH,
         '--script-security', '2',
-        '--up', DNS_SCRIPT,
-        '--down', DNS_SCRIPT,
+        '--up', HOOK_SCRIPT,
+        '--down', HOOK_SCRIPT,
         '--daemon',
       ],
       expect.objectContaining({ detached: true, stdio: 'ignore' })

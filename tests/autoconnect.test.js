@@ -6,7 +6,10 @@ jest.mock('child_process');
 jest.mock('fs');
 
 const fs = require('fs');
+const path = require('path');
 const VpnManager = require('../services/vpn');
+
+const HOOK_SCRIPT = path.join(__dirname, '..', 'services', 'tvpn-updown.sh');
 
 const CONFIGS_DIR = '/media/developer/vpn';
 const CONFIG_PATH = `${CONFIGS_DIR}/config.json`;
@@ -88,8 +91,8 @@ describe('VpnManager.setAutoConnect()', () => {
     const args = spawned[0].args;
     expect(args).toEqual(expect.arrayContaining([
       '--script-security', '2',
-      '--up', '/media/developer/ovpn-alpine/tvpn-dns-updown.sh',
-      '--down', '/media/developer/ovpn-alpine/tvpn-dns-updown.sh',
+      '--up', HOOK_SCRIPT,
+      '--down', HOOK_SCRIPT,
       '--daemon',
     ]));
   });

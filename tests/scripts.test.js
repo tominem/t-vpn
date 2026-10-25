@@ -58,8 +58,8 @@ function fakeMountTools() {
   };
 }
 
-describe('tvpn-dns-updown.sh', () => {
-  const SCRIPT = script('scripts/tvpn-dns-updown.sh');
+describe('tvpn-updown.sh', () => {
+  const SCRIPT = script('services/tvpn-updown.sh');
 
   function run(scriptType, foreign, tools) {
     const env = {

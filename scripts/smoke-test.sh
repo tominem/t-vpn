@@ -9,26 +9,15 @@
 #
 #   scripts/smoke-test.sh [tv-host] [country]
 #
-# The TV's address comes from DHCP and changes, so it is never written here.
-# It is taken, in order, from the first argument, from $TV_HOST, or from the
-# webos-tv skill's ~/.config/webos-tv/tv.env (refresh that with the skill's
-# tv-find.sh --save). The SSH key comes from $TV_KEY or the same file.
+# The TV's address comes from DHCP and changes, so it is never written here;
+# lib-tv.sh resolves it from an argument, $TV_HOST, or the webos-tv skill's tv.env.
 # Leaves the TV disconnected with its resolver restored, pass or fail.
-CONFIG=${TV_CONFIG:-$HOME/.config/webos-tv/tv.env}
-if [ -f "$CONFIG" ]; then
-  # shellcheck disable=SC1090
-  . "$CONFIG"
-fi
-TV=${1:-$TV_HOST}
+# shellcheck source=lib-tv.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib-tv.sh"
+resolve_tv "${1:-}" || exit 2
 COUNTRY=${2:-br}
-KEY=${TV_KEY:-$HOME/.ssh/webos_tv_new}
-if [ -z "$TV" ]; then
-  echo "No TV address: pass it as the first argument, set TV_HOST, or run the" >&2
-  echo "webos-tv skill's tv-find.sh --save to write $CONFIG." >&2
-  exit 2
-fi
 
-SSH="ssh -i $KEY -o ConnectTimeout=10 -o BatchMode=yes root@$TV"
+SSH=tv_ssh
 FAILED=0
 
 pass() { printf '  PASS  %s\n' "$1"; }

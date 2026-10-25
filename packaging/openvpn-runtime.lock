@@ -1,0 +1,14 @@
+# Alpine Linux v3.19 armv7 packages that make up the OpenVPN runtime shipped in the IPK.
+# sha256 of each .apk as downloaded from dl-cdn.alpinelinux.org/alpine/v3.19/main/armv7.
+# scripts/fetch-openvpn-runtime.sh refuses any file that does not match, so a changed
+# or tampered mirror cannot slip a different binary into the package.
+#
+# These are the exact files tested on the TV. v3.19 is end-of-life, so these revisions
+# are frozen; if one ever disappears, update the pin deliberately after re-testing.
+1a343e9e37a02bba49b8e2522531a90f7f4903248f7973f1710ad8188d26e80a  openvpn-2.6.16-r0.apk
+3ed815ea3d57e91c20c438de81c4f1e9e6e912b0a9eb9fed0bf17caeca6f9f65  musl-1.2.4_git20230717-r6.apk
+e53e06317546ebd265d319295a5adf40f4b23127159ec70c1e5131ffdacb6697  libcap-ng-0.8.3-r4.apk
+d31b20fb9b12946e66de1bdc865caeb3079cf3cb3ce14b8b52ae1d5bd53d4bfd  libcrypto3-3.1.8-r1.apk
+629bb50265ef2e478dd9293f0e8c4774b64c9ba43e13e76848bf5ea4bfca04e2  libssl3-3.1.8-r1.apk
+2378763bef7f9e919d697a39af6422ad8252de8b2a4451cae06bc204943226eb  lz4-libs-1.9.4-r5.apk
+b6e40b5b5e610415ee05d7e7a4384ceccabda9b395d1eb07a1a8e231be20ab24  lzo-2.10-r5.apk

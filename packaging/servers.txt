@@ -1,0 +1,9 @@
+# country-code  NordVPN host. The app's country buttons use the code; build-ipk.sh
+# installs ovpn/<host>.nordvpn.com.udp.ovpn as configs/<code>.ovpn in the package.
+us us14185
+br br149
+gb uk2621
+de de1432
+jp jp879
+nl nl835
+ar ar93

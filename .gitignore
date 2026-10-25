@@ -5,3 +5,4 @@ coverage/
 *.auth
 ovpn/.auth
 wireguard/
+build/

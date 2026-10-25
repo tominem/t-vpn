@@ -1,0 +1,42 @@
+#!/bin/sh
+# Continuous entropy seeder for kernel 4.4
+# getrandom() checks entropy_avail each call on this kernel;
+# without this daemon, mbed TLS (OpenVPN) blocks indefinitely.
+#
+# The TVPN_ENTROPY_* overrides exist only so the tests can run this off the TV.
+PIDFILE=${TVPN_ENTROPY_PID:-/tmp/entropy-daemon.pid}
+AVAIL_FILE=${TVPN_ENTROPY_AVAIL:-/proc/sys/kernel/random/entropy_avail}
+INTERVAL=${TVPN_ENTROPY_INTERVAL:-15}
+
+seed_entropy() {
+  python2 -c "
+import os, fcntl, struct
+RNDADDENTROPY = 0x40085203
+for _ in range(8):
+    fd = os.open('/dev/random', os.O_RDWR)
+    data = os.urandom(256)
+    buf = struct.pack('ii', 256*8, 256) + data
+    fcntl.ioctl(fd, RNDADDENTROPY, buf)
+    os.close(fd)
+" 2>/dev/null
+}
+
+# Idempotent: the installer starts this too, and a second daemon would only burn CPU
+# on a TV that is already heavily loaded.
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  exit 0
+fi
+
+# Initial seed
+seed_entropy
+
+# Background daemon: re-seed when entropy drops below 256 bits
+(while true; do
+  AVAIL=$(cat "$AVAIL_FILE")
+  if [ "$AVAIL" -lt 256 ]; then
+    seed_entropy
+  fi
+  sleep "$INTERVAL"
+done) &
+
+echo $! > "$PIDFILE"

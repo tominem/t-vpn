@@ -181,6 +181,23 @@ case "$(luna status '{}' 14)" in
   *) fail "status reports disconnected, not blocked (got: $(luna status '{}'))" ;;
 esac
 
+# What the TV does at every boot when auto-connect is on: run the init.d script.
+# Skipped for someone who has it off. This is the path an upgrade once broke
+# without anything noticing, leaving the TV to boot with no VPN.
+if $SSH '[ -x /var/lib/webosbrew/init.d/99-tvpn ]' >/dev/null 2>&1; then
+  echo "Boot-time auto-connect"
+  $SSH 'rm -f /tmp/tvpn-autoconnect.log; sh /var/lib/webosbrew/init.d/99-tvpn' >/dev/null 2>&1
+  wait_for_tunnel
+  check "it left no error behind" '[ ! -s /tmp/tvpn-autoconnect.log ]'
+  check "the kill switch came up with it" 'iptables -S OUTPUT | grep -m1 "^-A" | grep -q TVPN_KILL'
+  check "the VPN's DNS is in place" 'mountpoint -q /etc/resolv.conf'
+  case "$(luna status '{}' 14)" in
+    *"\"connected\":true"*"\"country\":\""*) pass "status reports the country it connected to" ;;
+    *) fail "status reports the country it connected to (got: $(luna status '{}'))" ;;
+  esac
+  luna disconnect '{}' 14 >/dev/null; sleep 4
+fi
+
 if [ -z "${SMOKE_SKIP_CRASH:-}" ]; then
   echo "Kill switch holds when the tunnel dies"
   echo "  (kills OpenVPN on purpose: the TV's internet is cut for a few seconds)"

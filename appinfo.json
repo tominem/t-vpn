@@ -4,7 +4,7 @@
   "main": "frontend/index.html",
   "icon": "frontend/icon.png",
   "type": "web",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "vendor": "tominem",
   "largeIcon": "frontend/icon_large.png",
   "bgImage": "",

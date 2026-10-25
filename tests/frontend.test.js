@@ -716,10 +716,14 @@ describe('noticing a tunnel that dies while the app is open', () => {
       bridge.neverReply('disconnect');
       document.getElementById('btn-disconnect').click();
       await flush();
-      pending.onservicecallback(JSON.stringify({ returnValue: true, connected: true, country: 'br' }));
+      const during = document.getElementById('status-badge').textContent;
+      // A stale answer that disagrees with the screen: it must not win.
+      pending.onservicecallback(JSON.stringify({ returnValue: true, connected: false, blocked: false, country: null }));
       await flush();
 
       expect(document.getElementById('message').textContent).toBe('Disconnecting…');
+      expect(document.getElementById('status-badge').textContent).toBe(during);
+      expect(document.getElementById('status-badge').textContent).not.toBe('Disconnected');
     });
   });
 });

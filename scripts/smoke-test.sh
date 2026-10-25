@@ -188,7 +188,6 @@ echo "Switching country"
 # The app only allows this as disconnect-then-connect. Proves the second tunnel
 # is a different server, that the kill switch follows it, and that nothing of the
 # first one is left behind.
-first_ip=$($SSH 'curl -s -m 10 https://api.ipify.org' 2>/dev/null)
 connect "$COUNTRY" >/dev/null
 first_ip=$($SSH 'curl -s -m 10 https://api.ipify.org' 2>/dev/null)
 luna disconnect '{}' 14 >/dev/null; sleep 4

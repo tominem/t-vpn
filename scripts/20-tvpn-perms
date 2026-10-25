@@ -6,7 +6,8 @@
 # developer-area setup resets /media/developer to world-writable across
 # reboots, which would otherwise leave the NordVPN service credentials in
 # .auth readable by every process on the TV.
-VPN_DIR=/media/developer/vpn
+# Overridable only so the tests can run this against a scratch directory.
+VPN_DIR=${TVPN_VPN_DIR:-/media/developer/vpn}
 
 [ -d "$VPN_DIR" ] || exit 0
 

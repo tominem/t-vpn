@@ -22,5 +22,6 @@ for fd in $(ls /proc/$$/fd 2>/dev/null); do
   esac
 done
 
-DIR=/media/developer/ovpn-alpine
+# Overridable only so the tests can point this at a stand-in loader.
+DIR=${TVPN_OVPN_DIR:-/media/developer/ovpn-alpine}
 exec "$DIR/lib/ld-musl-armhf.so.1" --library-path "$DIR/lib" "$DIR/bin/openvpn" "$@"

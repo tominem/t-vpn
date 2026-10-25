@@ -15,8 +15,10 @@ set -e
 
 APP=com.tominem.tvpn
 SVC=com.tominem.tvpn.service
-SVC_DIR=/media/developer/apps/usr/palm/services/$SVC
-D=/var/luna-service2-dev
+# The TVPN_* overrides exist only so the tests can run this without root or a TV.
+SVC_DIR=${TVPN_SVC_DIR:-/media/developer/apps/usr/palm/services/$SVC}
+D=${TVPN_LUNA_DIR:-/var/luna-service2-dev}
+LS_CONTROL=${TVPN_LS_CONTROL:-/usr/sbin/ls-control}
 
 for sub in services.d roles.d api-permissions.d client-permissions.d manifests.d; do
   [ -d "$D/$sub" ] || { echo "missing $D/$sub - is this a rooted webOS TV?" >&2; exit 1; }
@@ -53,7 +55,7 @@ printf '{"id":"%s","version":"1.0.0","serviceFiles":["%s/services.d/%s.service"]
   "$APP" "$D" "$SVC" "$D" "$SVC" "$D" "$APP" "$D" "$SVC" "$D" "$SVC" "$D" "$SVC" "$D" "$APP" "$D" "$SVC" \
   > "$D/manifests.d/$APP.json"
 
-/usr/sbin/ls-control scan-services
+"$LS_CONTROL" scan-services
 
 echo "Registered $APP and $SVC. Also run ls-control scan-services after any"
 echo "reinstall, and if calls to the service ever start hanging."

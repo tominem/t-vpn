@@ -19,8 +19,9 @@
 # into a tunnel that no longer exists.
 #
 # Requires --script-security 2.
-RESOLV=/etc/resolv.conf
-OVERRIDE=/tmp/tvpn-resolv.conf
+# Overridable only so the tests can run this without root or a TV.
+RESOLV=${TVPN_RESOLV:-/etc/resolv.conf}
+OVERRIDE=${TVPN_OVERRIDE:-/tmp/tvpn-resolv.conf}
 
 case "$script_type" in
   up)

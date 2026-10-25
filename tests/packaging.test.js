@@ -315,7 +315,7 @@ rm -rf "$w"
       'frontend/icon.png', 'frontend/icon_large.png']
       .forEach((rel) => expect(fs.existsSync(path.join(stage, 'app', rel))).toBe(true));
     ['index.js', 'vpn.js', 'package.json', 'services.json', 'run-js-service',
-      'openvpn-launch.sh', 'tvpn-updown.sh', 'install-on-device.sh',
+      'openvpn-launch.sh', 'tvpn-updown.sh', 'tvpn-killswitch.sh', 'install-on-device.sh',
       'install-luna-registration.sh', 'boot/10-entropy-seed', 'boot/20-tvpn-perms',
       'ovpn-runtime/bin/openvpn', 'ovpn-runtime/lib/ld-musl-armhf.so.1']
       .forEach((rel) => expect(fs.existsSync(path.join(stage, 'svc', rel))).toBe(true));
@@ -348,7 +348,7 @@ rm -rf "$w"
     const { stage } = build();
     const svc = (rel) => mode(path.join(stage, 'svc', rel));
 
-    ['run-js-service', 'openvpn-launch.sh', 'tvpn-updown.sh', 'install-on-device.sh',
+    ['run-js-service', 'openvpn-launch.sh', 'tvpn-updown.sh', 'tvpn-killswitch.sh', 'install-on-device.sh',
       'install-luna-registration.sh', 'boot/10-entropy-seed', 'boot/20-tvpn-perms',
       'ovpn-runtime/bin/openvpn', 'ovpn-runtime/lib/ld-musl-armhf.so.1']
       .forEach((rel) => expect(svc(rel) & 0o111).not.toBe(0));

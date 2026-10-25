@@ -45,7 +45,21 @@ function call(method, payload) {
 
 describe('registration', () => {
   test('registers under the service name the app and the hub expect', () => {
-    expect(serviceCtorCalls).toEqual([['com.tominem.tvpn.service']]);
+    expect(serviceCtorCalls).toHaveLength(1);
+    expect(serviceCtorCalls[0][0]).toBe('com.tominem.tvpn.service');
+  });
+
+  test('stays warm for longer than the interval at which the app checks status', () => {
+    // Otherwise every check would cold-start the service (about 1.5 s of CPU each
+    // on the TV) and the service would be restarting continuously while the app
+    // is open. Tied to the app's real interval rather than a copy of the number.
+    const main = require('fs').readFileSync(path.join(__dirname, '..', 'frontend', 'main.js'), 'utf8');
+    const pollMs = Number(/const POLL_MS = (\d+);/.exec(main)[1]);
+
+    const options = serviceCtorCalls[0][2];
+
+    expect(options).toEqual({ idleTimer: expect.any(Number) });
+    expect(options.idleTimer * 1000).toBeGreaterThan(pollMs);
   });
 
   test('registers exactly the five methods the app calls', () => {
@@ -116,6 +130,15 @@ describe('status', () => {
 
     expect(call('status', {})).toEqual({
       returnValue: true, connected: true, country: 'de', pid: 321,
+    });
+  });
+
+  test('reports a tunnel that died with the kill switch holding traffic', () => {
+    // The app needs this to tell "blocked on purpose" from "internet is down".
+    mockVpn.status.mockReturnValue({ connected: false, blocked: true, country: 'br', pid: null });
+
+    expect(call('status', {})).toEqual({
+      returnValue: true, connected: false, blocked: true, country: 'br', pid: null,
     });
   });
 

@@ -28,6 +28,14 @@ function writeExecutable(file, body) {
   fs.writeFileSync(file, body, { mode: 0o755 });
 }
 
+const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+
+function write(file, data, fileMode) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, data, { mode: fileMode || 0o644 });
+  return file;
+}
+
 function mode(file) {
   return fs.statSync(file).mode & 0o777;
 }
@@ -479,5 +487,371 @@ describe('smoke-test.sh (address and exit status only; the checks need a TV)', (
     expect(res.status).toBe(1);
     expect(res.stdout).toMatch(/FAIL {2}tunnel came up/);
     expect(res.stdout).toMatch(/check\(s\) failed/);
+  });
+});
+
+describe('tvpn-killswitch.sh', () => {
+  const SCRIPT = script('services/tvpn-killswitch.sh');
+  const SERVER = '187.15.85.146';
+  const RULES = [
+    '-A TVPN_KILL -o lo -j ACCEPT',
+    '-A TVPN_KILL -o tun+ -j ACCEPT',
+    '-A TVPN_KILL -p udp --dport 53 -j DROP',
+    '-A TVPN_KILL -p tcp --dport 53 -j DROP',
+    `-A TVPN_KILL -d ${SERVER} -j ACCEPT`,
+    '-A TVPN_KILL -d 10.0.0.0/8 -j ACCEPT',
+    '-A TVPN_KILL -d 172.16.0.0/12 -j ACCEPT',
+    '-A TVPN_KILL -d 192.168.0.0/16 -j ACCEPT',
+    '-A TVPN_KILL -d 169.254.0.0/16 -j ACCEPT',
+    '-A TVPN_KILL -d 224.0.0.0/4 -j ACCEPT',
+    '-A TVPN_KILL -d 255.255.255.255 -j ACCEPT',
+    '-A TVPN_KILL -j DROP',
+  ];
+
+  /**
+   * iptables and ip stand-ins with just enough state to be honest: whether the
+   * chain exists, how many times it is hooked into OUTPUT, and the rules in it.
+   */
+  function fakeNetfilter() {
+    const bin = path.join(tmp, 'nfbin');
+    const state = path.join(tmp, 'nfstate');
+    fs.mkdirSync(state, { recursive: true });
+    const log = path.join(tmp, 'nf.log');
+    write(path.join(state, 'jumps'), '0\n');
+    write(path.join(bin, 'iptables'), `#!/bin/sh
+echo "iptables $*" >> "${log}"
+S="${state}"
+if [ -n "$FAIL_ON" ]; then case "$*" in *"$FAIL_ON"*) exit 1 ;; esac; fi
+case "$1" in
+  -N) [ -e "$S/chain" ] && exit 1; touch "$S/chain"; : > "$S/rules"; exit 0 ;;
+  -F) : > "$S/rules"; exit 0 ;;
+  -X) rm -f "$S/chain" "$S/rules"; exit 0 ;;
+  -A) shift; echo "-A $*" | sed 's/^-A -A /-A /' >> "$S/rules"; exit 0 ;;
+  -C) if [ "$(cat "$S/jumps")" -gt 0 ]; then exit 0; else exit 1; fi ;;
+  -I) echo $(( $(cat "$S/jumps") + 1 )) > "$S/jumps"; exit 0 ;;
+  -D) n=$(cat "$S/jumps"); [ "$n" -gt 0 ] || exit 1; echo $((n - 1)) > "$S/jumps"; exit 0 ;;
+esac
+exit 0
+`, 0o755);
+    write(path.join(bin, 'ip'), `#!/bin/sh
+echo "ip $*" >> "${log}"
+[ -n "$FAIL_IP" ] && exit 1
+case "$*" in
+  *"route replace blackhole"*) touch "${state}/v6" ;;
+  *"route del blackhole"*) rm -f "${state}/v6" ;;
+esac
+exit 0
+`, 0o755);
+    return {
+      bin,
+      setJumps: (n) => fs.writeFileSync(path.join(state, 'jumps'), `${n}\n`),
+      jumps: () => parseInt(fs.readFileSync(path.join(state, 'jumps'), 'utf8'), 10),
+      rules: () => (fs.existsSync(path.join(state, 'rules'))
+        ? fs.readFileSync(path.join(state, 'rules'), 'utf8').trim().split('\n').filter(Boolean) : []),
+      chainExists: () => fs.existsSync(path.join(state, 'chain')),
+      v6Blackholed: () => fs.existsSync(path.join(state, 'v6')),
+      calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []),
+    };
+  }
+
+  function run(args, nf, env) {
+    return spawnSync('sh', [SCRIPT].concat(args), {
+      env: Object.assign({
+        PATH: `${nf.bin}:${SYSTEM_PATH}`,
+        TVPN_KILL_MARKER: path.join(tmp, 'marker'),
+      }, env),
+      encoding: 'utf8',
+    });
+  }
+  const marker = () => path.join(tmp, 'marker');
+
+  test('arms: loopback and the tunnel pass, plain DNS is dropped, the LAN and the server pass, the rest is dropped', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['on', SERVER], nf);
+
+    expect(res.status).toBe(0);
+    expect(nf.rules()).toEqual(RULES);
+  });
+
+  test('drops plain DNS before the LAN rules, so names cannot leak to the router', () => {
+    // Once the tunnel is gone connmand would still ask the router, and the
+    // names the TV looks up would leak even though the connections are blocked.
+    const rules = (() => { const nf = fakeNetfilter(); run(['on', SERVER], nf); return nf.rules(); })();
+
+    const dns = rules.findIndex((r) => r.includes('--dport 53'));
+    const lan = rules.findIndex((r) => r.includes('192.168.0.0/16'));
+    const tun = rules.findIndex((r) => r.includes('-o tun+'));
+    expect(tun).toBeLessThan(dns);
+    expect(dns).toBeLessThan(lan);
+  });
+
+  test('the very last rule drops everything else', () => {
+    const nf = fakeNetfilter();
+    run(['on', SERVER], nf);
+
+    expect(nf.rules()[nf.rules().length - 1]).toBe('-A TVPN_KILL -j DROP');
+  });
+
+  test('lets the VPN server through, so the tunnel can be re-established', () => {
+    const nf = fakeNetfilter();
+    run(['on', '203.0.113.9'], nf);
+
+    expect(nf.rules()).toContain('-A TVPN_KILL -d 203.0.113.9 -j ACCEPT');
+  });
+
+  test('puts the chain into the path only after it is fully built', () => {
+    // A half-built chain in OUTPUT would block traffic it was never meant to.
+    const nf = fakeNetfilter();
+    run(['on', SERVER], nf);
+
+    const calls = nf.calls();
+    const hook = calls.findIndex((c) => c.startsWith('iptables -I OUTPUT 1 -j TVPN_KILL'));
+    const lastRule = calls.map((c, i) => (c.startsWith('iptables -A TVPN_KILL') ? i : -1)).reduce((a, b) => Math.max(a, b));
+    expect(hook).toBeGreaterThan(lastRule);
+  });
+
+  test('blackholes global IPv6, since there is no ip6tables and the tunnel carries only IPv4', () => {
+    const nf = fakeNetfilter();
+
+    run(['on', SERVER], nf);
+
+    expect(nf.v6Blackholed()).toBe(true);
+    expect(nf.calls()).toContain('ip -6 route replace blackhole 2000::/3');
+  });
+
+  test('records that it is armed, with the server', () => {
+    const nf = fakeNetfilter();
+
+    run(['on', SERVER], nf);
+
+    expect(fs.readFileSync(marker(), 'utf8').trim()).toBe(SERVER);
+  });
+
+  test('arming twice never stacks rules or hooks', () => {
+    const nf = fakeNetfilter();
+
+    run(['on', SERVER], nf);
+    run(['on', SERVER], nf);
+
+    expect(nf.rules()).toEqual(RULES);
+    expect(nf.jumps()).toBe(1);
+  });
+
+  test('still arms when the IPv6 route cannot be added', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['on', SERVER], nf, { FAIL_IP: '1' });
+
+    expect(res.status).toBe(0);
+    expect(fs.existsSync(marker())).toBe(true);
+  });
+
+  test('refuses to arm without a server address, rather than block the handshake', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['on'], nf);
+
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('usage');
+    expect(nf.calls()).toEqual([]);
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test('if building the chain fails part way, it undoes everything instead of leaving a half-built one', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['on', SERVER], nf, { FAIL_ON: '-d 10.0.0.0/8' });
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('could not arm');
+    expect(nf.jumps()).toBe(0);
+    expect(nf.chainExists()).toBe(false);
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test('if the chain cannot be hooked in, it disarms rather than claim to be armed', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['on', SERVER], nf, { FAIL_ON: '-I OUTPUT' });
+
+    expect(res.status).toBe(1);
+    expect(fs.existsSync(marker())).toBe(false);
+    expect(nf.chainExists()).toBe(false);
+  });
+
+  test('fails loudly when iptables is not installed', () => {
+    const nf = fakeNetfilter();
+    fs.rmSync(path.join(nf.bin, 'iptables'));
+    const hasSystemIptables = spawnSync('sh', ['-c', `PATH=${SYSTEM_PATH} command -v iptables`]).status === 0;
+    if (hasSystemIptables) return; // a system iptables would be found instead
+
+    const res = run(['on', SERVER], nf);
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('iptables not found');
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test('disarms: unhooks, flushes and deletes the chain, restores IPv6, clears the marker', () => {
+    const nf = fakeNetfilter();
+    run(['on', SERVER], nf);
+
+    const res = run(['off'], nf);
+
+    expect(res.status).toBe(0);
+    expect(nf.jumps()).toBe(0);
+    expect(nf.chainExists()).toBe(false);
+    expect(nf.v6Blackholed()).toBe(false);
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test('removes a hook that an interrupted run left in twice', () => {
+    const nf = fakeNetfilter();
+    nf.setJumps(2);
+    write(marker(), `${SERVER}\n`);
+
+    run(['off'], nf);
+
+    expect(nf.jumps()).toBe(0);
+  });
+
+  test('disarming when nothing is armed is harmless', () => {
+    const nf = fakeNetfilter();
+
+    const res = run(['off'], nf);
+
+    expect(res.status).toBe(0);
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test('disarming works even when iptables itself misbehaves', () => {
+    // The user must always be able to get their internet back.
+    const nf = fakeNetfilter();
+    write(marker(), `${SERVER}\n`);
+
+    const res = run(['off'], nf, { FAIL_ON: 'TVPN_KILL' });
+
+    expect(res.status).toBe(0);
+    expect(fs.existsSync(marker())).toBe(false);
+  });
+
+  test.each([[[]], [['frobnicate']]])('rejects %j with a usage message', (args) => {
+    const nf = fakeNetfilter();
+
+    const res = run(args, nf);
+
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('usage');
+  });
+});
+
+describe('tvpn-updown.sh and the kill switch', () => {
+  const HOOK = script('services/tvpn-updown.sh');
+
+  /** A kill switch stand-in that records how it was called. */
+  function fakeKill(extra) {
+    const file = path.join(tmp, 'killswitch');
+    const log = path.join(tmp, 'kill.log');
+    write(file, `#!/bin/sh\necho "$@" >> "${log}"\n${extra || ''}`, 0o755);
+    return { file, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
+  }
+
+  function hook(type, env, kill) {
+    const tools = fakeMountTools();
+    const res = spawnSync('sh', [HOOK], {
+      env: Object.assign({
+        PATH: `${tools.bin}:/usr/bin:/bin`,
+        TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
+        TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
+        TVPN_KILLSWITCH: kill.file,
+        script_type: type,
+      }, env),
+      encoding: 'utf8',
+    });
+    return { res, tools };
+  }
+
+  test('up arms the kill switch for the server OpenVPN connected to', () => {
+    const kill = fakeKill();
+
+    hook('up', { trusted_ip: '187.15.85.146', foreign_option_1: 'dhcp-option DNS 1.1.1.1' }, kill);
+
+    expect(kill.calls()).toEqual(['on 187.15.85.146']);
+  });
+
+  test('up arms it even when the server pushed no DNS', () => {
+    // Regression: the DNS step used to `exit 0` when nothing was pushed, which
+    // skipped everything after it, so no DNS pushed meant no kill switch either.
+    const kill = fakeKill();
+
+    const { res, tools } = hook('up', { trusted_ip: '187.15.85.146' }, kill);
+
+    expect(res.status).toBe(0);
+    expect(tools.calls()).toEqual([]);
+    expect(kill.calls()).toEqual(['on 187.15.85.146']);
+  });
+
+  test('up does not arm blind when OpenVPN did not say which server it reached', () => {
+    // Without the server address the chain could not let the handshake through.
+    const kill = fakeKill();
+
+    hook('up', { foreign_option_1: 'dhcp-option DNS 1.1.1.1' }, kill);
+
+    expect(kill.calls()).toEqual([]);
+  });
+
+  test('down leaves the kill switch armed: a tunnel that dies must keep traffic blocked', () => {
+    const kill = fakeKill();
+    const tools = fakeMountTools();
+    tools.markMounted();
+
+    const res = spawnSync('sh', [HOOK], {
+      env: {
+        PATH: `${tools.bin}:/usr/bin:/bin`,
+        TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
+        TVPN_KILLSWITCH: kill.file,
+        script_type: 'down',
+        trusted_ip: '187.15.85.146',
+      },
+      encoding: 'utf8',
+    });
+
+    expect(res.status).toBe(0);
+    expect(kill.calls()).toEqual([]);
+    expect(tools.calls()).toEqual([`umount ${path.join(tmp, 'resolv.conf')}`]);
+  });
+
+  test('up still succeeds, and says why, if the kill switch cannot be armed', () => {
+    // Tearing the tunnel down over this would be worse than a warning.
+    const kill = fakeKill('exit 1\n');
+
+    const { res } = hook('up', { trusted_ip: '187.15.85.146' }, kill);
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('kill switch could not be armed');
+  });
+
+  test('finds the kill switch beside itself when not told where it is', () => {
+    // As installed on the TV: both scripts in the service directory.
+    const dir = path.join(tmp, 'svc');
+    fs.mkdirSync(dir);
+    fs.copyFileSync(HOOK, path.join(dir, 'tvpn-updown.sh'));
+    const log = path.join(tmp, 'sibling.log');
+    write(path.join(dir, 'tvpn-killswitch.sh'), `#!/bin/sh\necho "$@" >> "${log}"\n`, 0o755);
+    const tools = fakeMountTools();
+
+    spawnSync('sh', [path.join(dir, 'tvpn-updown.sh')], {
+      env: {
+        PATH: `${tools.bin}:/usr/bin:/bin`,
+        TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
+        TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
+        script_type: 'up',
+        trusted_ip: '198.51.100.7',
+      },
+      encoding: 'utf8',
+    });
+
+    expect(fs.readFileSync(log, 'utf8').trim()).toBe('on 198.51.100.7');
   });
 });

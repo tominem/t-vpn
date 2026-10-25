@@ -1,6 +1,8 @@
 'use strict';
 
-var spawn = require('child_process').spawn;
+var childProcess = require('child_process');
+var spawn = childProcess.spawn;
+var spawnSync = childProcess.spawnSync;
 var fs = require('fs');
 var path = require('path');
 
@@ -12,6 +14,10 @@ var SPAWN_ERR_PATH = '/tmp/tvpn-spawn-error.log';
 // Redirects the resolver to the pushed DNS while connected; without it the
 // tunnel leaks every lookup to the ISP. See the script for the details.
 var HOOK_SCRIPT = path.join(__dirname, 'tvpn-updown.sh');
+// Armed by the hook once the tunnel is up and left armed if the tunnel dies, so
+// traffic cannot leak; only a deliberate disconnect or a reconnect lifts it.
+var KILL_SCRIPT = path.join(__dirname, 'tvpn-killswitch.sh');
+var KILL_MARKER = '/tmp/tvpn-killswitch';
 
 // Shared by connect() and the boot-time auto-connect runner, so the two paths
 // cannot drift apart. They did once: auto-connect was built separately and
@@ -60,19 +66,38 @@ VpnManager.prototype._readState = function () {
   }
   if (!pid || !fs.existsSync('/proc/' + pid)) return null;
 
-  var country = null;
-  try {
-    country = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')).country || null;
-  } catch (e) {
-    // Country is cosmetic; a live pid without it still counts as connected.
-  }
-
-  return { pid: pid, country: country };
+  return { pid: pid, country: this._readCountry() };
 };
 
-VpnManager.prototype._clearState = function () {
+VpnManager.prototype._readCountry = function () {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')).country || null;
+  } catch (e) {
+    // Country is cosmetic; a live pid without it still counts as connected.
+    return null;
+  }
+};
+
+VpnManager.prototype._isBlocked = function () {
+  return fs.existsSync(KILL_MARKER);
+};
+
+// Synchronous on purpose: telling the user "disconnected" while traffic is still
+// blocked would leave them offline with no explanation. Returns whether it worked.
+VpnManager.prototype._killSwitchOff = function () {
+  try {
+    var result = spawnSync(KILL_SCRIPT, ['off'], { env: childEnv(), stdio: 'ignore', timeout: 10000 });
+    return !!result && result.status === 0;
+  } catch (e) {
+    return false;
+  }
+};
+
+VpnManager.prototype._clearState = function (keepCountry) {
   // Both files are routinely absent; removing a missing one is success here.
-  try { fs.unlinkSync(STATE_PATH); } catch (e) { /* already gone */ }
+  if (!keepCountry) {
+    try { fs.unlinkSync(STATE_PATH); } catch (e) { /* already gone */ }
+  }
   try { fs.unlinkSync(PID_PATH); } catch (e) { /* already gone */ }
 
   // OpenVPN's --down hook normally drops the resolver override, but it never
@@ -97,6 +122,12 @@ VpnManager.prototype.connect = function (country) {
 
   if (!fs.existsSync(configPath)) {
     return { ok: false, error: 'Config not found: ' + configPath };
+  }
+
+  // Reconnecting after the tunnel died: the switch only lets the old server
+  // through, so a different country's handshake would be blocked.
+  if (this._isBlocked() && !this._killSwitchOff()) {
+    return { ok: false, error: 'Could not lift the kill switch before reconnecting.' };
   }
 
   var self = this;
@@ -134,29 +165,43 @@ VpnManager.prototype.connect = function (country) {
 VpnManager.prototype.disconnect = function () {
   var state = this._readState();
   if (state === null) {
+    var wasBlocked = this._isBlocked();
     this._clearState();
-    return { ok: false, error: 'Not connected.' };
+    // The tunnel is already gone; if the switch is holding traffic, disconnecting
+    // is how the user gets their internet back.
+    if (!wasBlocked) return { ok: false, error: 'Not connected.' };
+    return this._killSwitchOff()
+      ? { ok: true }
+      : { ok: false, error: 'Could not lift the kill switch; traffic is still blocked.' };
   }
   try {
     process.kill(state.pid, 'SIGTERM');
   } catch (e) {
     this._clearState();
+    this._killSwitchOff();
     return { ok: false, error: 'Failed to stop pid ' + state.pid + ': ' + e.message };
   }
   this._clearState();
-  return { ok: true };
+  return this._killSwitchOff()
+    ? { ok: true }
+    : { ok: false, error: 'Disconnected, but the kill switch could not be lifted; traffic is still blocked.' };
 };
 
 VpnManager.prototype.status = function () {
   var state = this._readState();
   if (state === null) {
+    // The kill switch still armed with no tunnel means the tunnel died by itself
+    // and traffic is blocked on purpose; report it so the UI can say so.
+    var blocked = this._isBlocked();
+    var country = blocked ? this._readCountry() : null;
     // A recorded pid that is no longer running means the tunnel died without
     // going through disconnect(); clean up after it so a crashed session does
-    // not leave the resolver pointed into a tunnel that no longer exists.
-    if (fs.existsSync(PID_PATH)) this._clearState();
-    return { connected: false, country: null, pid: null };
+    // not leave the resolver pointed into a tunnel that no longer exists. While
+    // blocked the country is kept, so the UI can name the server that dropped.
+    if (fs.existsSync(PID_PATH)) this._clearState(blocked);
+    return { connected: false, blocked: blocked, country: country, pid: null };
   }
-  return { connected: true, country: state.country, pid: state.pid };
+  return { connected: true, blocked: false, country: state.country, pid: state.pid };
 };
 
 VpnManager.prototype.setAutoConnect = function (country) {

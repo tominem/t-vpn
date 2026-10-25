@@ -18,35 +18,56 @@
 # fires even when the tunnel dies on its own, so DNS is never left pointing
 # into a tunnel that no longer exists.
 #
+# --up also arms the kill switch (tvpn-killswitch.sh), so traffic cannot leak if
+# the tunnel later drops. --down deliberately does NOT disarm it: a tunnel that
+# dies by itself must leave traffic blocked, and that is the whole point. Only a
+# deliberate disconnect (the service) or a reconnect turns it off.
+#
 # Requires --script-security 2.
 # Overridable only so the tests can run this without root or a TV.
 RESOLV=${TVPN_RESOLV:-/etc/resolv.conf}
 OVERRIDE=${TVPN_OVERRIDE:-/tmp/tvpn-resolv.conf}
+KILLSWITCH=${TVPN_KILLSWITCH:-$(cd "$(dirname "$0")" && pwd)/tvpn-killswitch.sh}
+
+dns_up() {
+  # The pushed servers arrive as foreign_option_N="dhcp-option DNS <addr>".
+  printf '# T-VPN: pushed by the VPN server, reached through tun0\n' > "$OVERRIDE"
+  i=1
+  while true; do
+    eval "opt=\${foreign_option_$i}"
+    [ -z "$opt" ] && break
+    # shellcheck disable=SC2086
+    set -- $opt
+    if [ "$1" = "dhcp-option" ] && [ "$2" = "DNS" ] && [ -n "$3" ]; then
+      printf 'nameserver %s\n' "$3" >> "$OVERRIDE"
+    fi
+    i=$((i + 1))
+  done
+
+  # Nothing pushed means there is nothing better to point at: leave the
+  # system resolver alone rather than breaking name resolution outright. This
+  # is a return, not an exit: the kill switch below must still be armed.
+  grep -q '^nameserver ' "$OVERRIDE" || return 0
+
+  mountpoint -q "$RESOLV" || mount --bind "$OVERRIDE" "$RESOLV"
+}
+
+dns_down() {
+  mountpoint -q "$RESOLV" && umount "$RESOLV"
+}
 
 case "$script_type" in
   up)
-    # The pushed servers arrive as foreign_option_N="dhcp-option DNS <addr>".
-    printf '# T-VPN: pushed by the VPN server, reached through tun0\n' > "$OVERRIDE"
-    i=1
-    while true; do
-      eval "opt=\${foreign_option_$i}"
-      [ -z "$opt" ] && break
-      # shellcheck disable=SC2086
-      set -- $opt
-      if [ "$1" = "dhcp-option" ] && [ "$2" = "DNS" ] && [ -n "$3" ]; then
-        printf 'nameserver %s\n' "$3" >> "$OVERRIDE"
-      fi
-      i=$((i + 1))
-    done
-
-    # Nothing pushed means there is nothing better to point at: leave the
-    # system resolver alone rather than breaking name resolution outright.
-    grep -q '^nameserver ' "$OVERRIDE" || exit 0
-
-    mountpoint -q "$RESOLV" || mount --bind "$OVERRIDE" "$RESOLV"
+    dns_up
+    # trusted_ip is the server OpenVPN actually connected to. Without it the
+    # chain could not let the handshake through, so do not arm blind.
+    if [ -n "$trusted_ip" ]; then
+      "$KILLSWITCH" on "$trusted_ip" \
+        || echo "tvpn-updown: kill switch could not be armed; traffic will leak if the tunnel drops" >&2
+    fi
     ;;
   down)
-    mountpoint -q "$RESOLV" && umount "$RESOLV"
+    dns_down
     ;;
 esac
 

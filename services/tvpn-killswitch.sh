@@ -13,9 +13,12 @@
 #   - the local network: RFC 1918 ranges, link-local, multicast and broadcast
 #     (the router, DHCP renewals, mDNS, SSDP; and ssh from the Mac)
 #
-# Plain DNS to anywhere else is dropped before the LAN rules. Without that, once
-# the tunnel is gone connmand would still ask the router, and the names the TV
-# looks up would leak even though the connections themselves are blocked.
+# Plain DNS aimed at the internet is dropped before the LAN rules, so no name
+# leaks to a public resolver. Plain DNS to a private address is allowed first:
+# connmand, which most system apps resolve through, forwards to the router, and
+# dropping that made them time out with a healthy tunnel (the kernel has no DNAT
+# to steer those queries into the tunnel instead). What this leaves is that names
+# those apps look up are visible to the router, never to anyone past it.
 #
 # IPv6 is not filtered because this kernel has no ip6tables. The tunnel carries
 # only IPv4, so global IPv6 would bypass it entirely; a blackhole route for
@@ -54,6 +57,11 @@ arm() {
 
   iptables -A "$CHAIN" -o lo -j ACCEPT || return 1
   iptables -A "$CHAIN" -o 'tun+' -j ACCEPT || return 1
+  for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+    for proto in udp tcp; do
+      iptables -A "$CHAIN" -p "$proto" -d "$net" --dport 53 -j ACCEPT || return 1
+    done
+  done
   iptables -A "$CHAIN" -p udp --dport 53 -j DROP || return 1
   iptables -A "$CHAIN" -p tcp --dport 53 -j DROP || return 1
   iptables -A "$CHAIN" -d "$server" -j ACCEPT || return 1

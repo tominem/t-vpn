@@ -496,6 +496,12 @@ describe('tvpn-killswitch.sh', () => {
   const RULES = [
     '-A TVPN_KILL -o lo -j ACCEPT',
     '-A TVPN_KILL -o tun+ -j ACCEPT',
+    '-A TVPN_KILL -p udp -d 10.0.0.0/8 --dport 53 -j ACCEPT',
+    '-A TVPN_KILL -p tcp -d 10.0.0.0/8 --dport 53 -j ACCEPT',
+    '-A TVPN_KILL -p udp -d 172.16.0.0/12 --dport 53 -j ACCEPT',
+    '-A TVPN_KILL -p tcp -d 172.16.0.0/12 --dport 53 -j ACCEPT',
+    '-A TVPN_KILL -p udp -d 192.168.0.0/16 --dport 53 -j ACCEPT',
+    '-A TVPN_KILL -p tcp -d 192.168.0.0/16 --dport 53 -j ACCEPT',
     '-A TVPN_KILL -p udp --dport 53 -j DROP',
     '-A TVPN_KILL -p tcp --dport 53 -j DROP',
     `-A TVPN_KILL -d ${SERVER} -j ACCEPT`,
@@ -574,16 +580,25 @@ exit 0
     expect(nf.rules()).toEqual(RULES);
   });
 
-  test('drops plain DNS before the LAN rules, so names cannot leak to the router', () => {
-    // Once the tunnel is gone connmand would still ask the router, and the
-    // names the TV looks up would leak even though the connections are blocked.
+  test('drops plain DNS to the internet, but lets the local router answer it', () => {
+    // Regression: dropping all plain DNS broke every app that resolves through
+    // connmand, which forwards to the router: the IPTV app timed out with 502/504
+    // while the tunnel was healthy. Names asked of the router stay on the LAN;
+    // anything aimed at a public resolver is still dropped, so none leak out.
     const rules = (() => { const nf = fakeNetfilter(); run(['on', SERVER], nf); return nf.rules(); })();
 
-    const dns = rules.findIndex((r) => r.includes('--dport 53'));
-    const lan = rules.findIndex((r) => r.includes('192.168.0.0/16'));
+    const drop = rules.findIndex((r) => r === '-A TVPN_KILL -p udp --dport 53 -j DROP');
     const tun = rules.findIndex((r) => r.includes('-o tun+'));
-    expect(tun).toBeLessThan(dns);
-    expect(dns).toBeLessThan(lan);
+    const lanDns = rules.map((r, i) => (r.includes('--dport 53 -j ACCEPT') ? i : -1)).filter((i) => i >= 0);
+    expect(lanDns).toHaveLength(6);
+    lanDns.forEach((i) => {
+      expect(i).toBeGreaterThan(tun);
+      expect(i).toBeLessThan(drop);
+    });
+    ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'].forEach((net) => {
+      expect(rules).toContain(`-A TVPN_KILL -p udp -d ${net} --dport 53 -j ACCEPT`);
+      expect(rules).toContain(`-A TVPN_KILL -p tcp -d ${net} --dport 53 -j ACCEPT`);
+    });
   });
 
   test('the very last rule drops everything else', () => {

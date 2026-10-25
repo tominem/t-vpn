@@ -15,7 +15,9 @@ DNS through the tunnel and arms a kill switch.
 - `tvpn-updown.sh` runs on tunnel up/down: it points `/etc/resolv.conf` at the
   VPN's DNS and arms the kill switch.
 - `tvpn-killswitch.sh` leaves only loopback, the tunnel, the VPN server and the
-  local network reachable. If the tunnel dies, traffic stays blocked until the
+  local network reachable. Plain DNS to a private address (the router) is
+  allowed because system apps resolve through the router; DNS to the internet
+  is dropped. If the tunnel dies, traffic stays blocked until the
   user disconnects. It is not persistent, so a reboot always restores the
   network. IPv6 is handled with a blackhole route because the kernel has no
   ip6tables.

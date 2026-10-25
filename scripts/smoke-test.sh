@@ -135,6 +135,8 @@ check "the chain is the first rule in OUTPUT" \
   'iptables -S OUTPUT | grep -m1 "^-A" | grep -q TVPN_KILL'
 check "plain DNS is dropped outside the tunnel" \
   'iptables -S TVPN_KILL | grep -q -- "--dport 53 -j DROP"'
+check "the router still answers DNS (apps behind connmand depend on it)" \
+  'nslookup example.com "$(ip route | awk "/^default/ {print \$3; exit}")" 2>&1 | grep -q "Address.*[0-9]"'
 check "everything else is dropped last" \
   '[ "$(iptables -S TVPN_KILL | tail -1)" = "-A TVPN_KILL -j DROP" ]'
 check "global IPv6 is blackholed (the tunnel carries only IPv4)" \

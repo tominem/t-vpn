@@ -5,14 +5,18 @@
   "scripts": {
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "lint": "eslint service/**/*.js tests/**/*.js"
+    "lint": "eslint frontend services tests"
   },
   "devDependencies": {
     "eslint": "^8.57.0",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
   },
   "jest": {
     "testEnvironment": "node",
-    "collectCoverageFrom": ["service/**/*.js"]
+    "collectCoverageFrom": [
+      "services/**/*.js",
+      "frontend/main.js"
+    ]
   }
 }

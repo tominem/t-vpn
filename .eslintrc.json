@@ -1,21 +1,53 @@
 {
-  "env": { "node": true, "es2021": true, "jest": true },
+  "env": {
+    "node": true,
+    "es2021": true,
+    "jest": true
+  },
   "extends": "eslint:recommended",
   "rules": {
     "no-console": "off",
-    "semi": ["error", "always"],
-    "quotes": ["error", "single"]
+    "semi": [
+      "error",
+      "always"
+    ],
+    "quotes": [
+      "error",
+      "single"
+    ]
   },
   "overrides": [
     {
-      "files": ["frontend/**/*.js"],
-      "env": { "browser": true, "node": false },
-      "globals": { "PalmServiceBridge": "readonly" },
-      "parserOptions": { "ecmaVersion": 2017 }
+      "files": [
+        "frontend/**/*.js"
+      ],
+      "env": {
+        "browser": true,
+        "node": false
+      },
+      "globals": {
+        "PalmServiceBridge": "readonly"
+      },
+      "parserOptions": {
+        "ecmaVersion": 2017
+      }
     },
     {
-      "files": ["services/**/*.js"],
-      "parserOptions": { "ecmaVersion": 5 }
+      "files": [
+        "services/**/*.js"
+      ],
+      "parserOptions": {
+        "ecmaVersion": 5
+      }
+    },
+    {
+      "files": [
+        "tests/frontend.test.js",
+        "tests/helpers/app.js"
+      ],
+      "env": {
+        "browser": true
+      }
     }
   ]
 }

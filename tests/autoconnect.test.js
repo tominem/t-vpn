@@ -21,31 +21,107 @@ beforeEach(() => {
 });
 
 describe('VpnManager.setAutoConnect()', () => {
-  test('the boot runner records the country, so the UI can show it', () => {
-    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('br');
+  /**
+   * Generates the boot runner and EXECUTES it against fake fs and
+   * child_process modules, so these tests see what it does rather than what
+   * its source text happens to contain. (A text match on the generated source
+   * passed with the country-recording line deleted.)
+   */
+  function runBootRunner(options) {
+    const opts = options || {};
+    const prefix = opts.prefix || ['--library-path', '/libs', '/bin/openvpn'];
+    new VpnManager('/bin/launch', CONFIGS_DIR, prefix).setAutoConnect('br');
 
-    const runner = fs.writeFileSync.mock.calls
+    const source = fs.writeFileSync.mock.calls
       .map((c) => String(c[1]))
       .find((body) => body.includes('spawn('));
+    expect(source).toBeDefined();
 
-    expect(runner).toContain('/tmp/tvpn-state.json');
-    expect(runner).toContain('country: c.country');
+    const spawned = [];
+    const written = {};
+    const fakeFs = {
+      readFileSync: () => JSON.stringify(opts.config ||
+        { autoConnect: true, country: 'br' }),
+      existsSync: () => true,
+      writeFileSync: (file, data) => { written[file] = String(data); },
+    };
+    const fakeChild = {
+      spawn: (bin, args, spawnOpts) => {
+        spawned.push({ bin, args, opts: spawnOpts });
+        return { unref: () => {} };
+      },
+    };
+    // The real process.exit stops the script, so the fake must too, or the
+    // code after an early exit(0) would keep running and spawn anyway. The
+    // runner wraps itself in try/catch, which swallows the first throw and
+    // calls exit(1); only the FIRST exit call is the decision under test.
+    const exitSignal = new Error('process.exit');
+    const fakeProcess = {
+      env: opts.env || { PATH: '/usr/bin', LD_PRELOAD: '/usr/lib/libsystrim.so.3' },
+      exit: jest.fn(() => { throw exitSignal; }),
+    };
+
+    try {
+      // eslint-disable-next-line no-new-func
+      new Function('require', 'process', source)(
+        (name) => (name === 'fs' ? fakeFs : fakeChild),
+        fakeProcess
+      );
+    } catch (e) {
+      if (e !== exitSignal) throw e;
+    }
+    return { spawned, written, exit: fakeProcess.exit };
+  }
+
+  test('the boot runner records the country, so the UI can show it', () => {
+    const { written } = runBootRunner();
+
+    expect(JSON.parse(written['/tmp/tvpn-state.json'])).toEqual({ country: 'br' });
   });
 
   test('the boot runner carries the DNS hooks, like connect() does', () => {
     // Regression: the runner was built separately from connect() and came up
     // without --up/--down, so an auto-connected tunnel leaked every lookup.
-    new VpnManager('/media/developer/openvpn', CONFIGS_DIR).setAutoConnect('br');
+    const { spawned } = runBootRunner();
 
-    const runner = fs.writeFileSync.mock.calls
-      .map((c) => String(c[1]))
-      .find((body) => body.includes('spawn('));
+    expect(spawned).toHaveLength(1);
+    const args = spawned[0].args;
+    expect(args).toEqual(expect.arrayContaining([
+      '--script-security', '2',
+      '--up', '/media/developer/ovpn-alpine/tvpn-dns-updown.sh',
+      '--down', '/media/developer/ovpn-alpine/tvpn-dns-updown.sh',
+      '--daemon',
+    ]));
+  });
 
-    expect(runner).toBeDefined();
-    expect(runner).toContain('--script-security');
-    expect(runner).toContain('--up');
-    expect(runner).toContain('--down');
-    expect(runner).toContain('tvpn-dns-updown.sh');
+  test('the boot runner launches the same way connect() does', () => {
+    const { spawned } = runBootRunner();
+
+    expect(spawned[0].bin).toBe('/bin/launch');
+    expect(spawned[0].args.slice(0, 3)).toEqual(['--library-path', '/libs', '/bin/openvpn']);
+    expect(spawned[0].args).toEqual(expect.arrayContaining([
+      '--config', `${CONFIGS_DIR}/br.ovpn`,
+      '--auth-user-pass', `${CONFIGS_DIR}/.auth`,
+      '--writepid', '/tmp/tvpn-openvpn.pid',
+    ]));
+    expect(spawned[0].opts).toMatchObject({ detached: true, stdio: 'ignore' });
+  });
+
+  test('the boot runner strips LD_PRELOAD from what it starts', () => {
+    const { spawned } = runBootRunner();
+
+    expect(spawned[0].opts.env).not.toHaveProperty('LD_PRELOAD');
+    expect(spawned[0].opts.env).toHaveProperty('PATH', '/usr/bin');
+  });
+
+  test('the boot runner does nothing when auto-connect was turned off', () => {
+    const { spawned, written, exit } = runBootRunner({
+      config: { autoConnect: false, country: 'br' },
+    });
+
+    expect(exit.mock.calls[0]).toEqual([0]);
+    expect(spawned).toHaveLength(0);
+    expect(written).toEqual({});
   });
 
   test('writes config.json with autoConnect=true and country', () => {
@@ -111,6 +187,13 @@ describe('VpnManager.getAutoConnect()', () => {
     fs.readFileSync.mockReturnValue(JSON.stringify({ autoConnect: true, country: 'jp' }));
     const vpn = new VpnManager('/media/developer/openvpn', CONFIGS_DIR);
     expect(vpn.getAutoConnect()).toEqual({ enabled: true, country: 'jp' });
+  });
+
+  test('reports enabled with no country when none was stored', () => {
+    fs.readFileSync.mockReturnValueOnce(JSON.stringify({ autoConnect: true }));
+
+    expect(new VpnManager('/media/developer/openvpn', CONFIGS_DIR).getAutoConnect())
+      .toEqual({ enabled: true, country: null });
   });
 
   test('returns disabled when config JSON is corrupt', () => {

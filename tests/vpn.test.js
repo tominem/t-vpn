@@ -88,12 +88,22 @@ describe('VpnManager.connect()', () => {
   });
 
   test('strips LD_PRELOAD from the child environment', () => {
-    spawn.mockReturnValue(makeMockProcess());
+    // webOS gives Luna services a glibc LD_PRELOAD. It has to be present here,
+    // or there is nothing to strip and this passes whatever the code does.
+    const saved = process.env.LD_PRELOAD;
+    process.env.LD_PRELOAD = '/usr/lib/libsystrim.so.3';
+    try {
+      spawn.mockReturnValue(makeMockProcess());
 
-    new VpnManager(BIN, DIR).connect('us');
+      new VpnManager(BIN, DIR).connect('us');
 
-    const env = openvpnCall()[2].env;
-    expect(env).not.toHaveProperty('LD_PRELOAD');
+      const env = openvpnCall()[2].env;
+      expect(env).not.toHaveProperty('LD_PRELOAD');
+      expect(env).toHaveProperty('PATH'); // the rest of the environment survives
+    } finally {
+      if (saved === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = saved;
+    }
   });
 
   test('passes prefix args ahead of the openvpn options', () => {
@@ -203,6 +213,78 @@ describe('VpnManager.status()', () => {
 
     expect(new VpnManager(BIN, DIR).status()).toEqual({
       connected: false, country: null, pid: null,
+    });
+  });
+});
+
+describe('failure handling', () => {
+  /** Connects with a stand-in process and returns the handler it registered for 'error'. */
+  function spawnErrorHandler() {
+    const proc = makeMockProcess();
+    spawn.mockReturnValue(proc);
+    new VpnManager(BIN, DIR).connect('us');
+    return proc.on.mock.calls.find((c) => c[0] === 'error')[1];
+  }
+
+  test('a spawn failure is recorded instead of taking the service down', () => {
+    // An 'error' event with no listener is an uncaught exception in Node.
+    const onError = spawnErrorHandler();
+
+    expect(() => onError(new Error('spawn ENOENT'))).not.toThrow();
+
+    expect(fs.appendFileSync).toHaveBeenCalledWith(
+      '/tmp/tvpn-spawn-error.log',
+      expect.stringContaining('spawn ENOENT')
+    );
+  });
+
+  test('the record names the binary that could not start', () => {
+    const onError = spawnErrorHandler();
+
+    onError(new Error('spawn EACCES'));
+
+    expect(fs.appendFileSync.mock.calls[0][1]).toContain(BIN);
+  });
+
+  test('failing to write that record does not mask the original failure', () => {
+    const onError = spawnErrorHandler();
+    fs.appendFileSync.mockImplementationOnce(() => { throw new Error('disk full'); });
+
+    expect(() => onError(new Error('spawn ENOENT'))).not.toThrow();
+  });
+
+  test('connect reports when it cannot record the session', () => {
+    spawn.mockReturnValue(makeMockProcess());
+    fs.writeFileSync.mockImplementationOnce(() => { throw new Error('read-only fs'); });
+
+    const result = new VpnManager(BIN, DIR).connect('us');
+
+    expect(result).toEqual({ ok: false, error: 'Failed to record state: read-only fs' });
+  });
+
+  test('disconnect reports a process it cannot signal, and still clears state', () => {
+    liveTunnel(4242, 'us');
+    const kill = jest.spyOn(process, 'kill').mockImplementationOnce(() => {
+      throw new Error('ESRCH');
+    });
+
+    const result = new VpnManager(BIN, DIR).disconnect();
+
+    expect(result).toEqual({ ok: false, error: 'Failed to stop pid 4242: ESRCH' });
+    expect(fs.unlinkSync).toHaveBeenCalledWith(PID_PATH);
+    kill.mockRestore();
+  });
+
+  test('a live tunnel whose state file lacks a country still reports connected', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockImplementation((p) => {
+      if (p === PID_PATH) return '77';
+      if (p === STATE_PATH) return JSON.stringify({});
+      throw new Error('ENOENT: ' + p);
+    });
+
+    expect(new VpnManager(BIN, DIR).status()).toEqual({
+      connected: true, country: null, pid: 77,
     });
   });
 });

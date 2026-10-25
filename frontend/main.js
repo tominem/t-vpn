@@ -109,6 +109,10 @@ const messageEl     = document.getElementById('message');
 
 let activeCountry = null;
 let autoConnectOn = false;
+// An action (connect, disconnect, save) is in flight; the periodic status check
+// must not redraw the screen underneath it.
+let busy = false;
+let polling = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -122,15 +126,28 @@ function applyAutoConnect({ enabled }) {
   btnAutoConn.textContent = autoConnectOn ? 'Auto-connect: ON' : 'Auto-connect: OFF';
 }
 
-function applyStatus({ connected, country }) {
+const BLOCKED_TEXT =
+  'VPN connection lost. Internet is blocked until you reconnect or press Disconnect.';
+
+function applyStatus({ connected, blocked, country }) {
   activeCountry = connected ? country || null : null;
 
-  // A live tunnel whose recorded country was lost still counts as connected.
-  badge.textContent = connected
-    ? 'Connected' + (activeCountry ? ` · ${activeCountry.toUpperCase()}` : '')
-    : 'Disconnected';
-  badge.className = `badge ${connected ? 'connected' : 'disconnected'}`;
-  btnDisconnect.disabled = !connected;
+  if (blocked && !connected) {
+    // The tunnel died on its own and the kill switch is holding traffic back on
+    // purpose. Say so plainly: from the couch this looks like "internet is down".
+    badge.textContent = 'Blocked' + (country ? ` · ${country.toUpperCase()}` : '');
+    badge.className = 'badge blocked';
+    setMessage(BLOCKED_TEXT);
+  } else {
+    // A live tunnel whose recorded country was lost still counts as connected.
+    badge.textContent = connected
+      ? 'Connected' + (activeCountry ? ` · ${activeCountry.toUpperCase()}` : '')
+      : 'Disconnected';
+    badge.className = `badge ${connected ? 'connected' : 'disconnected'}`;
+    if (messageEl.textContent === BLOCKED_TEXT) setMessage('');
+  }
+  // Disconnect stays available while blocked: it is how the internet comes back.
+  btnDisconnect.disabled = !(connected || blocked);
   btnAutoConn.disabled = !connected;
 
   document.querySelectorAll('.country-btn').forEach((btn) => {
@@ -262,6 +279,7 @@ COUNTRIES.forEach(({ code, label }) => {
   btn.innerHTML = flagSvg(code) + '<span>' + label + '</span>';
 
   btn.addEventListener('click', async () => {
+    busy = true;
     setMessage(`Connecting to ${label}…`);
     badge.className = 'badge connecting';
     badge.textContent = 'Connecting…';
@@ -276,6 +294,8 @@ COUNTRIES.forEach(({ code, label }) => {
     } catch (err) {
       setMessage(`Error: ${err.message}`);
       refreshStatus();
+    } finally {
+      busy = false;
     }
   });
 
@@ -285,6 +305,7 @@ COUNTRIES.forEach(({ code, label }) => {
 // ── Disconnect ────────────────────────────────────────────────────────────────
 
 btnDisconnect.addEventListener('click', async () => {
+  busy = true;
   setMessage('Disconnecting…');
   try {
     await lunaCall('disconnect');
@@ -292,12 +313,15 @@ btnDisconnect.addEventListener('click', async () => {
     applyStatus({ connected: false, country: null });
   } catch (err) {
     setMessage(`Error: ${err.message}`);
+  } finally {
+    busy = false;
   }
 });
 
 // ── Auto-connect toggle ───────────────────────────────────────────────────────
 
 btnAutoConn.addEventListener('click', async () => {
+  busy = true;
   const enabling = !autoConnectOn;
   try {
     if (enabling) {
@@ -310,6 +334,8 @@ btnAutoConn.addEventListener('click', async () => {
     applyAutoConnect({ enabled: enabling });
   } catch (err) {
     setMessage(`Error: ${err.message}`);
+  } finally {
+    busy = false;
   }
 });
 
@@ -330,6 +356,33 @@ async function refreshStatus() {
     applyStatus({ connected: false, country: null });
   }
 }
+
+// ── Notice a tunnel that dies while the app is open ───────────────────────────
+//
+// Status was only read on load and after an action, so a tunnel dying under an
+// open screen went unnoticed, and with the kill switch armed that reads as a
+// dead TV. A light periodic check fixes it. It never overlaps itself, never
+// runs during an action, and a missed answer changes nothing: failing to hear
+// from the service says nothing about the tunnel, and flipping the screen to
+// "Disconnected" on a hiccup would be a lie.
+
+const POLL_MS = 10000;
+
+async function pollStatus() {
+  if (busy || polling) return;
+  polling = true;
+  try {
+    const status = await lunaCall('status');
+    // An action may have started while this was in flight; it owns the screen.
+    if (!busy) applyStatus(status);
+  } catch (err) {
+    // Keep showing the last known state.
+  } finally {
+    polling = false;
+  }
+}
+
+setInterval(pollStatus, POLL_MS);
 
 // Give the remote something to start from: refreshStatus() may take a moment,
 // and until something has focus the D-pad has nothing to move from.

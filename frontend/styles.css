@@ -43,6 +43,7 @@ h2 { font-size: 36px; margin-bottom: 32px; color: #aaa; }
 .badge.disconnected { background: #333; color: #888; }
 .badge.connected    { background: #1a6e3c; color: #4cff91; }
 .badge.connecting   { background: #4a3a00; color: #ffc84a; }
+.badge.blocked      { background: #6e1a1a; color: #ff6b6b; }
 
 .grid {
   display: flex;

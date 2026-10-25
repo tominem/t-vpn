@@ -138,6 +138,16 @@ function loadApp(options = {}) {
     realAdd(type, fn, opts);
   };
 
+  // Same for timers: the app's periodic status check would otherwise keep firing
+  // into whichever later test happens to be running when it comes due.
+  const intervals = [];
+  const realSetInterval = window.setInterval;
+  window.setInterval = (...args) => {
+    const id = realSetInterval.apply(window, args);
+    intervals.push(id);
+    return id;
+  };
+
   // Loaded through jest's module system, not eval'd, so coverage instruments
   // it (code built with `new Function` is invisible to istanbul). isolateModules
   // gives every load a fresh module scope: the script's top-level const bindings
@@ -148,12 +158,14 @@ function loadApp(options = {}) {
     });
   } finally {
     document.addEventListener = realAdd;
+    window.setInterval = realSetInterval;
   }
 
   applyLayout(document);
 
   bridge.cleanup = () => {
     added.forEach(([type, fn, opts]) => document.removeEventListener(type, fn, opts));
+    intervals.forEach((id) => window.clearInterval(id));
     Object.defineProperty(buttonProto, 'disabled', realDisabled);
   };
   return bridge;

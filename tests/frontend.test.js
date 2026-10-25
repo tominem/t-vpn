@@ -500,3 +500,226 @@ describe('remote control edge cases', () => {
     expect(bridge.callsTo('connect')).toHaveLength(0);
   });
 });
+
+describe('kill switch: a blocked tunnel', () => {
+  const BLOCKED = 'VPN connection lost. Internet is blocked until you reconnect or press Disconnect.';
+  const blockedStatus = { connected: false, blocked: true, country: 'br' };
+
+  test('says plainly that traffic is blocked, naming the server that dropped', async () => {
+    // From the couch a held-back connection looks exactly like "the internet is down".
+    loadApp({ status: blockedStatus });
+    await settle();
+
+    expect(document.getElementById('status-badge').textContent).toBe('Blocked · BR');
+    expect(document.getElementById('status-badge').className).toBe('badge blocked');
+    expect(document.getElementById('message').textContent).toBe(BLOCKED);
+  });
+
+  test('copes with a blocked tunnel whose country was not recorded', async () => {
+    loadApp({ status: { connected: false, blocked: true, country: null } });
+    await settle();
+
+    expect(document.getElementById('status-badge').textContent).toBe('Blocked');
+  });
+
+  test('keeps Disconnect available, because that is how the internet comes back', async () => {
+    loadApp({ status: blockedStatus });
+    await settle();
+
+    expect(document.getElementById('btn-disconnect').disabled).toBe(false);
+    expect(document.getElementById('btn-autoconnect').disabled).toBe(true);
+  });
+
+  test('leaves every country available so the user can reconnect', async () => {
+    loadApp({ status: blockedStatus });
+    await settle();
+
+    expect(Array.prototype.filter.call(
+      document.querySelectorAll('.country-btn'), (b) => b.disabled
+    )).toHaveLength(0);
+  });
+
+  test('Disconnect restores the screen and clears the warning', async () => {
+    const bridge = loadApp({ status: blockedStatus });
+    await settle();
+    bridge.reply('disconnect', { returnValue: true, ok: true });
+
+    document.getElementById('btn-disconnect').click();
+    await settle();
+
+    expect(bridge.callsTo('disconnect')).toHaveLength(1);
+    expect(document.getElementById('status-badge').textContent).toBe('Disconnected');
+    expect(document.getElementById('message').textContent).toBe('');
+  });
+
+  test('reconnecting from a blocked state asks for the chosen country', async () => {
+    const bridge = loadApp({ status: blockedStatus });
+    await settle();
+    bridge.reply('connect', { returnValue: true, ok: true });
+
+    document.querySelector('.country-btn[data-code="de"]').click();
+    await settle();
+
+    expect(bridge.callsTo('connect')[0].params).toEqual({ country: 'de' });
+    expect(document.getElementById('status-badge').textContent).toBe('Connected · DE');
+    expect(document.getElementById('message').textContent).toBe('');
+  });
+
+  test('an unrelated message is not wiped just because the tunnel is fine', async () => {
+    const bridge = loadApp();
+    await settle();
+    bridge.reply('connect', { returnValue: false, error: 'Config not found' });
+    document.querySelector('.country-btn[data-code="jp"]').click();
+    await settle();
+    expect(document.getElementById('message').textContent).toBe('Error: Config not found');
+
+    // a later status that is merely "disconnected" must leave that error alone
+    bridge.reply('status', { returnValue: true, connected: false, blocked: false });
+    document.getElementById('btn-disconnect').disabled = false;
+    await settle();
+
+    expect(document.getElementById('message').textContent).not.toBe('');
+  });
+});
+
+describe('noticing a tunnel that dies while the app is open', () => {
+  const flush = async () => {
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+  };
+
+  async function withTimers(fn) {
+    jest.useFakeTimers();
+    try {
+      await fn();
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+
+  test('checks again every ten seconds and shows what it finds', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp({ status: { connected: true, country: 'br', pid: 9 } });
+      await flush();
+      expect(document.getElementById('status-badge').textContent).toBe('Connected · BR');
+
+      bridge.reply('status', { returnValue: true, connected: false, blocked: true, country: 'br' });
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(document.getElementById('status-badge').textContent).toBe('Blocked · BR');
+      expect(document.getElementById('message').textContent).toContain('Internet is blocked');
+    });
+  });
+
+  test('the blocked warning clears by itself once the tunnel is back', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp({ status: { connected: false, blocked: true, country: 'br' } });
+      await flush();
+      expect(document.getElementById('message').textContent).toContain('Internet is blocked');
+
+      bridge.reply('status', { returnValue: true, connected: true, blocked: false, country: 'br', pid: 3 });
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(document.getElementById('status-badge').textContent).toBe('Connected · BR');
+      expect(document.getElementById('message').textContent).toBe('');
+    });
+  });
+
+  test('does nothing before the interval is up', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp();
+      await flush();
+      const before = bridge.callsTo('status').length;
+
+      jest.advanceTimersByTime(9000);
+      await flush();
+
+      expect(bridge.callsTo('status')).toHaveLength(before);
+    });
+  });
+
+  test('stays out of the way while an action is in flight', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp();
+      await flush();
+      bridge.neverReply('connect');
+      document.querySelector('.country-btn[data-code="us"]').click();
+      await flush();
+      const before = bridge.callsTo('status').length;
+
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(bridge.callsTo('status')).toHaveLength(before);
+      expect(document.getElementById('status-badge').textContent).toBe('Connecting…');
+    });
+  });
+
+  test('never has two checks in flight at once', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp();
+      await flush();
+      const before = bridge.callsTo('status').length;
+      bridge.neverReply('status');
+
+      jest.advanceTimersByTime(10000);
+      await flush();
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(bridge.callsTo('status')).toHaveLength(before + 1);
+    });
+  });
+
+  test('a missed answer leaves the screen as it was', async () => {
+    // Not hearing back says nothing about the tunnel; "Disconnected" would be a lie.
+    await withTimers(async () => {
+      const bridge = loadApp({ status: { connected: true, country: 'br', pid: 9 } });
+      await flush();
+      const message = document.getElementById('message').textContent;
+
+      bridge.reply('status', { returnValue: false, error: 'hub hiccup' });
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(document.getElementById('status-badge').textContent).toBe('Connected · BR');
+      expect(document.getElementById('message').textContent).toBe(message);
+    });
+  });
+
+  test('can check again after a missed answer', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp({ status: { connected: true, country: 'br', pid: 9 } });
+      await flush();
+      bridge.reply('status', { returnValue: false, error: 'hub hiccup' });
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      bridge.reply('status', { returnValue: true, connected: false, blocked: true, country: 'br' });
+      jest.advanceTimersByTime(10000);
+      await flush();
+
+      expect(document.getElementById('status-badge').textContent).toBe('Blocked · BR');
+    });
+  });
+
+  test('an answer that lands after an action began does not redraw over it', async () => {
+    await withTimers(async () => {
+      const bridge = loadApp({ status: { connected: true, country: 'br', pid: 9 } });
+      await flush();
+      bridge.neverReply('status');
+      jest.advanceTimersByTime(10000);
+      await flush();
+      const pending = bridge.callsTo('status').slice(-1)[0].bridge;
+
+      bridge.neverReply('disconnect');
+      document.getElementById('btn-disconnect').click();
+      await flush();
+      pending.onservicecallback(JSON.stringify({ returnValue: true, connected: true, country: 'br' }));
+      await flush();
+
+      expect(document.getElementById('message').textContent).toBe('Disconnecting…');
+    });
+  });
+});

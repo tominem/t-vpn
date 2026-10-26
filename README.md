@@ -21,6 +21,10 @@ DNS through the tunnel and arms a kill switch.
   user disconnects. It is not persistent, so a reboot always restores the
   network. IPv6 is handled with a blackhole route because the kernel has no
   ip6tables.
+- `tvpn-routewatch.sh` is started by `tvpn-updown.sh`. If the TV's address
+  changes, the kernel drops the host route OpenVPN uses to reach its server,
+  and OpenVPN's restart then sends its handshake into its own tunnel and never
+  recovers. The watcher checks every 10 s and puts that route back.
 
 ## Credentials
 

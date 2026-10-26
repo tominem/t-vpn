@@ -4,7 +4,7 @@
 #
 #   app      appinfo.json + frontend/
 #   service  index.js vpn.js package.json services.json run-js-service
-#            openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh
+#            openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh tvpn-routewatch.sh
 #            ovpn-runtime/   OpenVPN 2.6 with its musl loader and libraries
 #            configs/        <country>.ovpn, from packaging/servers.txt
 #            boot/           init.d scripts (entropy seeding, credential perms)
@@ -57,7 +57,7 @@ cp -R "$ROOT/frontend" "$STAGE/app/frontend"
 for m in "$ROOT"/services/*.js; do
   cp "$m" "$STAGE/svc/$(basename "$m")"
 done
-for f in package.json services.json run-js-service openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh; do
+for f in package.json services.json run-js-service openvpn-launch.sh tvpn-updown.sh tvpn-killswitch.sh tvpn-routewatch.sh; do
   [ -f "$ROOT/services/$f" ] || die "services/$f is missing"
   cp "$ROOT/services/$f" "$STAGE/svc/$f"
 done
@@ -80,7 +80,7 @@ find "$STAGE" -type d -exec chmod 755 {} +
 find "$STAGE" -type f -exec chmod 644 {} +
 
 chmod 755 "$STAGE/svc/run-js-service" "$STAGE/svc/openvpn-launch.sh" "$STAGE/svc/tvpn-updown.sh" \
-          "$STAGE/svc/tvpn-killswitch.sh" \
+          "$STAGE/svc/tvpn-killswitch.sh" "$STAGE/svc/tvpn-routewatch.sh" \
           "$STAGE/svc/install-on-device.sh" "$STAGE/svc/install-luna-registration.sh" \
           "$STAGE/svc/boot/"*
 chmod 755 "$STAGE/svc/ovpn-runtime/bin/openvpn" "$STAGE/svc/ovpn-runtime/lib/ld-musl-armhf.so.1"

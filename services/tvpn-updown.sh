@@ -23,13 +23,16 @@
 # dies by itself must leave traffic blocked, and that is the whole point. Only a
 # deliberate disconnect (the service) or a reconnect turns it off.
 #
-# --up also tunes the tunnel for the TV's CPU, see tune_tunnel.
+# --up also tunes the tunnel for the TV's CPU, see tune_tunnel, and starts the
+# route watcher (tvpn-routewatch.sh), which outlives OpenVPN's soft restarts.
 #
 # Requires --script-security 2.
 # Overridable only so the tests can run this without root or a TV.
 RESOLV=${TVPN_RESOLV:-/etc/resolv.conf}
 OVERRIDE=${TVPN_OVERRIDE:-/tmp/tvpn-resolv.conf}
 KILLSWITCH=${TVPN_KILLSWITCH:-$(cd "$(dirname "$0")" && pwd)/tvpn-killswitch.sh}
+ROUTEWATCH=${TVPN_ROUTEWATCH:-$(cd "$(dirname "$0")" && pwd)/tvpn-routewatch.sh}
+ROUTEWATCH_PID=${TVPN_ROUTEWATCH_PID:-/tmp/tvpn-routewatch.pid}
 # OpenVPN runs this script itself, so its parent is OpenVPN.
 OPENVPN_PID=${TVPN_OPENVPN_PID:-$PPID}
 NICE=${TVPN_NICE:--10}
@@ -76,6 +79,20 @@ tune_tunnel() {
     || echo "tvpn-updown: could not lengthen the tunnel's transmit queue" >&2
 }
 
+# A restart on its own (ping-restart) does not run this script again, so the
+# watcher has to be running already when the route goes missing. It stops by
+# itself once OpenVPN is gone or the kill switch is disarmed.
+stop_routewatch() {
+  [ -f "$ROUTEWATCH_PID" ] && kill "$(cat "$ROUTEWATCH_PID")" 2>/dev/null
+  rm -f "$ROUTEWATCH_PID"
+}
+
+start_routewatch() {
+  stop_routewatch
+  "$ROUTEWATCH" run "$1" "$OPENVPN_PID" </dev/null >/dev/null 2>&1 &
+  echo $! > "$ROUTEWATCH_PID"
+}
+
 case "$script_type" in
   up)
     dns_up
@@ -84,11 +101,13 @@ case "$script_type" in
     if [ -n "$trusted_ip" ]; then
       "$KILLSWITCH" on "$trusted_ip" \
         || echo "tvpn-updown: kill switch could not be armed; traffic will leak if the tunnel drops" >&2
+      start_routewatch "$trusted_ip"
     fi
     tune_tunnel
     ;;
   down)
     dns_down
+    stop_routewatch
     ;;
 esac
 

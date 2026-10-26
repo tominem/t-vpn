@@ -47,8 +47,8 @@ function mode(file) {
 function fakeMountTools() {
   const bin = path.join(tmp, 'bin');
   const state = path.join(tmp, 'state');
-  fs.mkdirSync(bin);
-  fs.mkdirSync(state);
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(state, { recursive: true });
   const log = path.join(state, 'log');
 
   writeExecutable(path.join(bin, 'mountpoint'),
@@ -83,6 +83,7 @@ describe('tvpn-updown.sh', () => {
       PATH: `${tools.bin}:/usr/bin:/bin`,
       TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
       TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
+      TVPN_ROUTEWATCH_PID: path.join(tmp, 'routewatch.pid'),
       script_type: scriptType,
     };
     foreign.forEach((v, i) => { env[`foreign_option_${i + 1}`] = v; });
@@ -162,6 +163,7 @@ describe('tvpn-updown.sh', () => {
       TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
       TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
       TVPN_OPENVPN_PID: '4242',
+      TVPN_ROUTEWATCH_PID: path.join(tmp, 'routewatch.pid'),
       script_type: 'up',
     }, extra);
     const runWith = (env) => spawnSync('sh', [SCRIPT], { env, encoding: 'utf8' });
@@ -855,7 +857,16 @@ describe('tvpn-updown.sh and the kill switch', () => {
     return { file, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
   }
 
-  function hook(type, env, kill) {
+  /** A route watcher stand-in that records how it was started. */
+  function fakeWatch(body) {
+    const file = path.join(tmp, 'routewatch');
+    const log = path.join(tmp, 'watch.log');
+    write(file, `#!/bin/sh\necho "$@" >> "${log}"\n${body || ''}`, 0o755);
+    return { file, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
+  }
+
+  function hook(type, env, kill, watch) {
+    watch = watch || fakeWatch();
     const tools = fakeMountTools();
     const res = spawnSync('sh', [HOOK], {
       env: Object.assign({
@@ -863,6 +874,8 @@ describe('tvpn-updown.sh and the kill switch', () => {
         TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
         TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
         TVPN_KILLSWITCH: kill.file,
+        TVPN_ROUTEWATCH: watch.file,
+        TVPN_ROUTEWATCH_PID: path.join(tmp, 'routewatch.pid'),
         script_type: type,
       }, env),
       encoding: 'utf8',
@@ -909,6 +922,7 @@ describe('tvpn-updown.sh and the kill switch', () => {
         PATH: `${tools.bin}:/usr/bin:/bin`,
         TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
         TVPN_KILLSWITCH: kill.file,
+        TVPN_ROUTEWATCH_PID: path.join(tmp, 'routewatch.pid'),
         script_type: 'down',
         trusted_ip: '187.15.85.146',
       },
@@ -930,6 +944,91 @@ describe('tvpn-updown.sh and the kill switch', () => {
     expect(res.stderr).toContain('kill switch could not be armed');
   });
 
+  describe('the route watcher', () => {
+    function waitFor(check, what) {
+      const end = Date.now() + 5000;
+      while (Date.now() < end) {
+        if (check()) return;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+      throw new Error(`timed out waiting for ${what}`);
+    }
+    const alive = (pid) => {
+      try { process.kill(pid, 0); return true; } catch (e) { return false; }
+    };
+    const pidFile = () => path.join(tmp, 'routewatch.pid');
+    const readPid = () => Number(fs.readFileSync(pidFile(), 'utf8'));
+    // A watcher that stays up, as the real one does, and says which process it is.
+    const longLived = () => fakeWatch(`echo $$ > "${path.join(tmp, 'watcher.pid')}"\nexec sleep 30\n`);
+
+    afterEach(() => {
+      try { process.kill(readPid()); } catch (e) { /* none left running */ }
+    });
+
+    test('up starts it for the server OpenVPN connected to, and for OpenVPN itself', () => {
+      const watch = fakeWatch();
+
+      hook('up', { trusted_ip: '187.15.85.146', TVPN_OPENVPN_PID: '4242' }, fakeKill(), watch);
+
+      waitFor(() => watch.calls().length > 0, 'the watcher to start');
+      expect(watch.calls()).toEqual(['run 187.15.85.146 4242']);
+      expect(fs.existsSync(pidFile())).toBe(true);
+    });
+
+    test('up starts it even when the server pushed no DNS', () => {
+      const watch = fakeWatch();
+
+      hook('up', { trusted_ip: '187.15.85.146' }, fakeKill(), watch);
+
+      waitFor(() => watch.calls().length > 0, 'the watcher to start');
+    });
+
+    test('up does not start it when OpenVPN did not say which server it reached', () => {
+      const watch = fakeWatch();
+
+      hook('up', {}, fakeKill(), watch);
+
+      expect(watch.calls()).toEqual([]);
+      expect(fs.existsSync(pidFile())).toBe(false);
+    });
+
+    test('a second up replaces the watcher instead of stacking another', () => {
+      const watch = longLived();
+      hook('up', { trusted_ip: '187.15.85.146' }, fakeKill(), watch);
+      waitFor(() => fs.existsSync(path.join(tmp, 'watcher.pid')), 'the first watcher');
+      const first = readPid();
+
+      hook('up', { trusted_ip: '187.15.85.146' }, fakeKill(), watch);
+
+      waitFor(() => !alive(first), 'the first watcher to stop');
+      expect(alive(readPid())).toBe(true);
+    });
+
+    test('down stops it', () => {
+      const watch = longLived();
+      hook('up', { trusted_ip: '187.15.85.146' }, fakeKill(), watch);
+      waitFor(() => fs.existsSync(path.join(tmp, 'watcher.pid')), 'the watcher');
+      const pid = readPid();
+
+      hook('down', {}, fakeKill(), watch);
+
+      waitFor(() => !alive(pid), 'the watcher to stop');
+      expect(fs.existsSync(pidFile())).toBe(false);
+    });
+
+    test('down with no watcher running is fine', () => {
+      const { res } = hook('down', {}, fakeKill(), fakeWatch());
+
+      expect(res.status).toBe(0);
+    });
+
+    test('up still succeeds if the watcher cannot be started', () => {
+      const { res } = hook('up', { trusted_ip: '187.15.85.146' }, fakeKill(), { file: path.join(tmp, 'missing') });
+
+      expect(res.status).toBe(0);
+    });
+  });
+
   test('finds the kill switch beside itself when not told where it is', () => {
     // As installed on the TV: both scripts in the service directory.
     const dir = path.join(tmp, 'svc');
@@ -944,6 +1043,7 @@ describe('tvpn-updown.sh and the kill switch', () => {
         PATH: `${tools.bin}:/usr/bin:/bin`,
         TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
         TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
+        TVPN_ROUTEWATCH_PID: path.join(tmp, 'routewatch.pid'),
         script_type: 'up',
         trusted_ip: '198.51.100.7',
       },
@@ -951,5 +1051,170 @@ describe('tvpn-updown.sh and the kill switch', () => {
     });
 
     expect(fs.readFileSync(log, 'utf8').trim()).toBe('on 198.51.100.7');
+  });
+});
+
+describe('tvpn-routewatch.sh', () => {
+  const SCRIPT = script('services/tvpn-routewatch.sh');
+  const SERVER = '198.51.100.7';
+  const VIA_TUN = `${SERVER} via 10.100.0.1 dev tun0  src 10.100.0.2\n    cache\n`;
+  const VIA_ETH = `${SERVER} via 192.168.1.1 dev eth0  src 192.168.1.15\n    cache\n`;
+  const DEFAULT_ETH = 'default via 192.168.1.1 dev eth0\n';
+
+  /**
+   * `ip` stand-in. The route lookup answers from a state file, and a replace is
+   * logged, makes the lookup answer "physical" from then on (as the kernel
+   * would) and, if asked, disarms the kill switch so a looping run ends.
+   */
+  function fakeIp(opts) {
+    const bin = path.join(tmp, 'bin');
+    const state = path.join(tmp, 'state');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.mkdirSync(state, { recursive: true });
+    const log = path.join(state, 'log');
+    write(path.join(state, 'get'), opts.get, 0o644);
+    write(path.join(state, 'default'), opts.defaults === undefined ? DEFAULT_ETH : opts.defaults, 0o644);
+    writeExecutable(path.join(bin, 'ip'), `#!/bin/sh
+echo "$*" >> "${log}"
+case "$1 $2" in
+  "route get")
+    [ -s "${state}/get" ] || exit 2
+    cat "${state}/get" ;;
+  "route show") cat "${state}/default" ;;
+  "route replace")
+    ${opts.replaceFails ? 'exit 2' : `printf '%s' '${VIA_ETH}' > "${state}/get"`}
+    ${opts.disarmOnReplace ? `rm -f "${opts.disarmOnReplace}"` : ''}
+    ;;
+esac
+`);
+    const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+    return { bin, calls, replaces: () => calls().filter((c) => c.startsWith('route replace')) };
+  }
+
+  function run(args, ip, env) {
+    return spawnSync('sh', [SCRIPT].concat(args), {
+      env: Object.assign({ PATH: `${ip ? `${ip.bin}:` : ''}/usr/bin:/bin` }, env),
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+  }
+
+  describe('check', () => {
+    test('puts the route to the server back when it is reached through the tunnel', () => {
+      const ip = fakeIp({ get: VIA_TUN });
+
+      const res = run(['check', SERVER], ip);
+
+      expect(res.status).toBe(0);
+      expect(ip.replaces()).toEqual([`route replace ${SERVER}/32 via 192.168.1.1 dev eth0`]);
+      expect(res.stderr).toContain('put the route to the VPN server back via 192.168.1.1 on eth0');
+    });
+
+    test('leaves a route that already goes over the physical network alone', () => {
+      const ip = fakeIp({ get: VIA_ETH });
+
+      const res = run(['check', SERVER], ip);
+
+      expect(res.status).toBe(0);
+      expect(ip.replaces()).toEqual([]);
+      expect(res.stderr).toBe('');
+    });
+
+    test('does nothing when the server cannot be looked up at all', () => {
+      const ip = fakeIp({ get: '' });
+
+      const res = run(['check', SERVER], ip);
+
+      expect(res.status).toBe(0);
+      expect(ip.replaces()).toEqual([]);
+    });
+
+    test('waits when there is no physical default route yet', () => {
+      const ip = fakeIp({ get: VIA_TUN, defaults: '' });
+
+      const res = run(['check', SERVER], ip);
+
+      expect(res.status).toBe(0);
+      expect(ip.replaces()).toEqual([]);
+    });
+
+    test('never uses a default route that enters a tunnel as the way out', () => {
+      const ip = fakeIp({ get: VIA_TUN, defaults: 'default via 10.100.0.1 dev tun0\n' });
+
+      run(['check', SERVER], ip);
+
+      expect(ip.replaces()).toEqual([]);
+    });
+
+    test('takes the physical default among others, whatever extra fields it has', () => {
+      const ip = fakeIp({
+        get: VIA_TUN,
+        defaults: 'default via 10.100.0.1 dev tun0\ndefault via 192.168.7.1 dev wlan0 proto dhcp metric 600\n',
+      });
+
+      run(['check', SERVER], ip);
+
+      expect(ip.replaces()).toEqual([`route replace ${SERVER}/32 via 192.168.7.1 dev wlan0`]);
+    });
+
+    test('says nothing, and still succeeds, if the route cannot be replaced', () => {
+      const ip = fakeIp({ get: VIA_TUN, replaceFails: true });
+
+      const res = run(['check', SERVER], ip);
+
+      expect(res.status).toBe(0);
+      expect(res.stderr).toBe('');
+    });
+
+    test('is idempotent: a second pass finds the route right', () => {
+      const ip = fakeIp({ get: VIA_TUN });
+
+      run(['check', SERVER], ip);
+      run(['check', SERVER], ip);
+
+      expect(ip.replaces()).toHaveLength(1);
+    });
+  });
+
+  describe('run', () => {
+    const marker = () => path.join(tmp, 'killswitch');
+    const env = () => ({ TVPN_KILL_MARKER: marker(), TVPN_ROUTEWATCH_INTERVAL: '1' });
+
+    test('returns at once when the kill switch is not armed', () => {
+      const ip = fakeIp({ get: VIA_TUN });
+
+      const res = run(['run', SERVER, String(process.pid)], ip, env());
+
+      expect(res.status).toBe(0);
+      expect(ip.calls()).toEqual([]);
+    });
+
+    test('returns when OpenVPN is gone', () => {
+      const ip = fakeIp({ get: VIA_TUN });
+      fs.writeFileSync(marker(), `${SERVER}\n`);
+      const gone = spawnSync('true').pid;
+
+      const res = run(['run', SERVER, String(gone)], ip, env());
+
+      expect(res.status).toBe(0);
+      expect(ip.calls()).toEqual([]);
+    });
+
+    test('keeps checking while OpenVPN runs, and stops when the kill switch is disarmed', () => {
+      const ip = fakeIp({ get: VIA_TUN, disarmOnReplace: marker() });
+      fs.writeFileSync(marker(), `${SERVER}\n`);
+
+      const res = run(['run', SERVER, String(process.pid)], ip, env());
+
+      expect(res.status).toBe(0);
+      expect(ip.replaces()).toEqual([`route replace ${SERVER}/32 via 192.168.1.1 dev eth0`]);
+    });
+  });
+
+  test('asks for what it needs', () => {
+    expect(run(['check'], null).status).toBe(2);
+    expect(run(['run', SERVER], null).status).toBe(2);
+    expect(run([], null).status).toBe(2);
+    expect(run(['bogus'], null).stderr).toContain('usage:');
   });
 });

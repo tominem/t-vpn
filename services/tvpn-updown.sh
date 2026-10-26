@@ -23,11 +23,17 @@
 # dies by itself must leave traffic blocked, and that is the whole point. Only a
 # deliberate disconnect (the service) or a reconnect turns it off.
 #
+# --up also tunes the tunnel for the TV's CPU, see tune_tunnel.
+#
 # Requires --script-security 2.
 # Overridable only so the tests can run this without root or a TV.
 RESOLV=${TVPN_RESOLV:-/etc/resolv.conf}
 OVERRIDE=${TVPN_OVERRIDE:-/tmp/tvpn-resolv.conf}
 KILLSWITCH=${TVPN_KILLSWITCH:-$(cd "$(dirname "$0")" && pwd)/tvpn-killswitch.sh}
+# OpenVPN runs this script itself, so its parent is OpenVPN.
+OPENVPN_PID=${TVPN_OPENVPN_PID:-$PPID}
+NICE=${TVPN_NICE:--10}
+TXQUEUELEN=${TVPN_TXQUEUELEN:-2000}
 
 dns_up() {
   # The pushed servers arrive as foreign_option_N="dhcp-option DNS <addr>".
@@ -56,6 +62,20 @@ dns_down() {
   mountpoint -q "$RESOLV" && umount "$RESOLV"
 }
 
+# OpenVPN encrypts every packet in user space, on a TV whose CPU is shared with
+# the apps in front of it. At normal priority it loses that CPU: it cannot drain
+# the tunnel's transmit queue (qlen 500 by default), the queue overflows and
+# drops packets, ACKs among them, and live streams stall. Measured on device
+# with a stream running: thousands of dropped packets on tun0 within seconds.
+# Raising OpenVPN's priority and lengthening the queue stops that. Neither is
+# worth tearing the tunnel down over, so a failure only warns.
+tune_tunnel() {
+  renice -n "$NICE" -p "$OPENVPN_PID" >/dev/null 2>&1 \
+    || echo "tvpn-updown: could not raise the priority of OpenVPN" >&2
+  ip link set dev "${dev:-tun0}" txqueuelen "$TXQUEUELEN" >/dev/null 2>&1 \
+    || echo "tvpn-updown: could not lengthen the tunnel's transmit queue" >&2
+}
+
 case "$script_type" in
   up)
     dns_up
@@ -65,6 +85,7 @@ case "$script_type" in
       "$KILLSWITCH" on "$trusted_ip" \
         || echo "tvpn-updown: kill switch could not be armed; traffic will leak if the tunnel drops" >&2
     fi
+    tune_tunnel
     ;;
   down)
     dns_down

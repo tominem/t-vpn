@@ -58,8 +58,17 @@ function fakeMountTools() {
   writeExecutable(path.join(bin, 'umount'),
     `#!/bin/sh\necho "umount $*" >> "${log}"\nrm -f "${state}/mounted"\n`);
 
+  // Stand-ins for the tuning tools, so no test renices a real process. They log
+  // apart from mount/umount: a test asserts on one set without the other.
+  const tuneLog = path.join(state, 'tune');
+  writeExecutable(path.join(bin, 'renice'),
+    `#!/bin/sh\necho "renice $*" >> "${tuneLog}"\n`);
+  writeExecutable(path.join(bin, 'ip'),
+    `#!/bin/sh\necho "ip $*" >> "${tuneLog}"\n`);
+
   return {
     bin,
+    tuneCalls: () => (fs.existsSync(tuneLog) ? fs.readFileSync(tuneLog, 'utf8').trim().split('\n') : []),
     markMounted: () => fs.writeFileSync(path.join(state, 'mounted'), ''),
     isMounted: () => fs.existsSync(path.join(state, 'mounted')),
     calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []),
@@ -145,6 +154,80 @@ describe('tvpn-updown.sh', () => {
     run('up', ['dhcp-option DNS 103.86.96.100'], tools);
 
     expect(tools.calls()).toEqual([]);
+  });
+
+  describe('tuning the tunnel for the TV', () => {
+    const tuneEnv = (tools, extra) => Object.assign({
+      PATH: `${tools.bin}:/usr/bin:/bin`,
+      TVPN_RESOLV: path.join(tmp, 'resolv.conf'),
+      TVPN_OVERRIDE: path.join(tmp, 'override.conf'),
+      TVPN_OPENVPN_PID: '4242',
+      script_type: 'up',
+    }, extra);
+    const runWith = (env) => spawnSync('sh', [SCRIPT], { env, encoding: 'utf8' });
+
+    test('up gives OpenVPN a higher priority and the tunnel a longer queue', () => {
+      const tools = fakeMountTools();
+
+      const res = runWith(tuneEnv(tools, { dev: 'tun3' }));
+
+      expect(res.status).toBe(0);
+      expect(tools.tuneCalls()).toEqual([
+        'renice -n -10 -p 4242',
+        'ip link set dev tun3 txqueuelen 2000',
+      ]);
+    });
+
+    test('up falls back to tun0, and the values can be changed', () => {
+      const tools = fakeMountTools();
+
+      runWith(tuneEnv(tools, { TVPN_NICE: '-5', TVPN_TXQUEUELEN: '1000' }));
+
+      expect(tools.tuneCalls()).toEqual([
+        'renice -n -5 -p 4242',
+        'ip link set dev tun0 txqueuelen 1000',
+      ]);
+    });
+
+    test('up renices its parent, OpenVPN, unless told another pid', () => {
+      const tools = fakeMountTools();
+      const env = tuneEnv(tools);
+      delete env.TVPN_OPENVPN_PID;
+      const res = spawnSync('sh', ['-c', `sh "${SCRIPT}"`], { env, encoding: 'utf8' });
+
+      expect(res.status).toBe(0);
+      expect(tools.tuneCalls()[0]).toMatch(/^renice -n -10 -p \d+$/);
+      expect(tools.tuneCalls()[0]).not.toContain('4242');
+    });
+
+    test('up tunes even when the server pushed no DNS', () => {
+      const tools = fakeMountTools();
+
+      runWith(tuneEnv(tools));
+
+      expect(tools.calls()).toEqual([]);
+      expect(tools.tuneCalls()).toHaveLength(2);
+    });
+
+    test('down tunes nothing', () => {
+      const tools = fakeMountTools();
+
+      runWith(tuneEnv(tools, { script_type: 'down' }));
+
+      expect(tools.tuneCalls()).toEqual([]);
+    });
+
+    test('a failing renice or ip only warns and the tunnel stays up', () => {
+      const tools = fakeMountTools();
+      writeExecutable(path.join(tools.bin, 'renice'), '#!/bin/sh\nexit 1\n');
+      writeExecutable(path.join(tools.bin, 'ip'), '#!/bin/sh\nexit 1\n');
+
+      const res = runWith(tuneEnv(tools, { trusted_ip: '' }));
+
+      expect(res.status).toBe(0);
+      expect(res.stderr).toContain('could not raise the priority of OpenVPN');
+      expect(res.stderr).toContain('could not lengthen the tunnel\'s transmit queue');
+    });
   });
 
   test('down unmounts the override', () => {
